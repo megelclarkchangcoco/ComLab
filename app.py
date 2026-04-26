@@ -20,7 +20,8 @@ DB_FILE = "database.db"
 # ---------------- LOGIN PAGE ----------------
 @app.route("/")
 def home():
-    return render_template("login.html")
+    return redirect(url_for("login"))
+
 # ---------------- REGISTER ACCOUNT ----------------
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -138,16 +139,30 @@ def login():
         or ""
     ).strip()
 
-    if not pc_tag:
-        pc_tag = socket.gethostname()
-
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         login_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        if not pc_tag:
+            flash("PC Unit is missing. Please open the login link with pc_tag.", "error")
+            return redirect(url_for("login"))
+
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
+
+            # Make sure this PC tag exists.
+            cur.execute("""
+                SELECT id
+                FROM devices
+                WHERE tag = ?
+                LIMIT 1
+            """, (pc_tag,))
+            pc_exists = cur.fetchone()
+
+            if not pc_exists:
+                flash(f"PC tag '{pc_tag}' is not registered. Please register this PC first.", "error")
+                return redirect(url_for("login", pc_tag=pc_tag))
 
             cur.execute("""
                 SELECT username, password, role, status, name
@@ -170,7 +185,6 @@ def login():
                 flash("Invalid username or password!", "error")
                 return redirect(url_for("login", pc_tag=pc_tag))
 
-            # Save session
             session["username"] = username_db
             session["role"] = role
             session["pc_tag"] = pc_tag
@@ -194,7 +208,6 @@ def login():
                 """, (pc_tag, username_db, login_time, student_name))
 
                 conn.commit()
-
                 return redirect(url_for("student_dashboard"))
 
             flash("Unknown account role.", "error")
@@ -211,50 +224,78 @@ def admin_dashboard():
         cur.execute("SELECT id, name FROM labs ORDER BY id ASC")
         labs = cur.fetchall()
     return render_template("admin_dashboard.html", labs=labs, edit_mode=edit_mode)
+
 @app.route("/register_device/<token>", methods=["GET", "POST"])
 def register_device(token):
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.cursor()
+
         cur.execute("SELECT id, name FROM labs")
         comlabs = cur.fetchall()
+
         cur.execute("SELECT id, used FROM device_tokens WHERE token = ?", (token,))
         row = cur.fetchone()
 
         if not row:
-            return "Invalid or expired link.", 400
+            flash("Invalid or expired registration link.", "error")
+            return redirect(url_for("login"))
+
         if row[1] == 1:
-            return "This link has already been used.", 400
+            flash("This registration link has already been used.", "error")
+            return redirect(url_for("login"))
 
         if request.method == "POST":
-            tag = request.form["tag"]
-            location = request.form["location"]
-            hostname = socket.gethostname()
-            ip_addr = request.remote_addr
+            tag = request.form.get("tag", "").strip()
+            location = request.form.get("location", "").strip()
+
+            if not tag or not location:
+                flash("PC tag and computer lab are required.", "error")
+                return redirect(url_for("register_device", token=token))
+
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             comlab_id = int(location)
 
-            # --- Check if device already exists in another comlab ---
+            # Do not use socket.gethostname() on Render.
+            # It returns the Render server hostname, not the actual PC.
+            hostname = tag
+
+            # Do not rely on IP for identity.
+            # Keep it for reference only.
+            ip_addr = request.headers.get("X-Forwarded-For", request.remote_addr)
+            if ip_addr and "," in ip_addr:
+                ip_addr = ip_addr.split(",")[0].strip()
+
             cur.execute("""
-                        SELECT comlab_id
-                        FROM devices
-                        WHERE tag = ?
-                           OR hostname = ?
-                        """, (tag, hostname))
+                SELECT id
+                FROM devices
+                WHERE tag = ?
+                LIMIT 1
+            """, (tag,))
             existing = cur.fetchone()
 
             if existing:
-                return f"⚠️ Device already registered in ComLab {existing[0]}. Cannot register in another ComLab.", 400
+                flash(f"PC tag '{tag}' is already registered.", "error")
+                return redirect(url_for("register_device", token=token))
 
-            # --- Insert device since it's not registered anywhere else ---
-            conn.execute("""
-                         INSERT INTO devices (tag, location, hostname, ip_address, created_at, comlab_id)
-                         VALUES (?, ?, ?, ?, ?, ?)
-                         """, (tag, location, hostname, ip_addr, created_at, comlab_id))
+            cur.execute("""
+                INSERT INTO devices
+                (tag, location, hostname, ip_address, created_at, comlab_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                tag,
+                location,
+                hostname,
+                ip_addr,
+                created_at,
+                comlab_id
+            ))
 
-            conn.execute("UPDATE device_tokens SET used = 1 WHERE id = ?", (row[0],))
+            cur.execute("UPDATE device_tokens SET used = 1 WHERE id = ?", (row[0],))
             conn.commit()
 
-            return render_template("success.html", tag=tag, hostname=hostname, ip=ip_addr)
+            # After registering PC, go to login with correct pc_tag.
+            flash(f"{tag} registered successfully. You may now log in.", "success")
+            return redirect(url_for("login", pc_tag=tag))
 
     return render_template("register_device.html", comlabs=comlabs)
 
@@ -809,12 +850,12 @@ def upload_profile():
 
     if "profile_pic" not in request.files:
         flash("No file selected.", "error")
-        return redirect("/student_dashboard")
+        return redirect(url_for("student_dashboard"))
 
     file = request.files["profile_pic"]
     if file.filename == "":
         flash("No selected file.", "error")
-        return redirect("/student_dashboard")
+        return redirect(url_for("student_dashboard"))
 
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
