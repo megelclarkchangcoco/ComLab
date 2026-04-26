@@ -3347,6 +3347,41 @@ def debug_device_cookie():
         "comlab_id": registered_pc["comlab_id"]
     })
 
+@app.route("/debug/pc_status/<int:lab_id>/<pc_tag>")
+def debug_pc_status(lab_id, pc_tag):
+    if "username" not in session or session.get("role") != "admin":
+        return jsonify({"success": False, "message": "Unauthorized"}), 403
+
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT unique_id, name, device_type, status, last_seen
+            FROM detected_devices
+            WHERE lab_id = ?
+              AND pc_tag = ?
+            ORDER BY datetime(last_seen) DESC
+        """, (str(lab_id), pc_tag))
+        detected = [dict(row) for row in cur.fetchall()]
+
+        cur.execute("""
+            SELECT name, unique_id, serial_number, assigned_pc, status
+            FROM peripherals
+            WHERE lab_id = ?
+              AND assigned_pc = ?
+            ORDER BY name ASC
+        """, (str(lab_id), pc_tag))
+        peripherals = [dict(row) for row in cur.fetchall()]
+
+    return jsonify({
+        "success": True,
+        "lab_id": lab_id,
+        "pc_tag": pc_tag,
+        "detected_devices": detected,
+        "peripherals": peripherals
+    })
+
 if __name__ == "__main__":
     # Embedded scanner is for local testing only.
     # Do not use it as the only scanner after deploying to Render.
