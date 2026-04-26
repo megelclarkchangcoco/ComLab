@@ -383,123 +383,50 @@ input.inline-edit { width:100%; padding:4px; border-radius:4px; border:1px solid
 {% endfor %}
 
 <script>
-const currentLabId = {{ comlab_id | tojson }};
-
 /* ============================================================
-   BASIC TOGGLE
+   WEBUSB SCAN — runs in the browser on the actual PC
+   Works on Render because the browser accesses local USB, not the server
    ============================================================ */
 
-function togglePC(tag) {
-    const content = document.getElementById("content-" + tag);
-    if (!content) return;
+function normalizeUsbDeviceType(device) {
+    const cls = device.deviceClass;
+    const name = (device.productName || "").toLowerCase();
+    const vendor = (device.manufacturerName || "").toLowerCase();
 
-    content.style.display = content.style.display === "block" ? "none" : "block";
+    // USB HID class = 3 (mouse, keyboard, etc.)
+    // USB Printer class = 7
+    // USB Mass Storage = 8
+    // USB Video class = 14
+
+    if (cls === 7 || name.includes("print")) return "Printer";
+    if (cls === 8 || name.includes("storage") || name.includes("flash") || name.includes("disk")) return "FlashDrive";
+    if (cls === 14 || name.includes("cam") || name.includes("webcam")) return "Webcam";
+    if (cls === 15 || name.includes("monitor") || name.includes("display")) return "Monitor";
+
+    // HID class — check product name for mouse/keyboard
+    if (name.includes("mouse") || vendor.includes("mouse")) return "Mouse";
+    if (name.includes("keyboard") || vendor.includes("keyboard")) return "Keyboard";
+    if (name.includes("headset") || name.includes("headphone") || name.includes("earphone")) return "Headset";
+    if (name.includes("speaker") || name.includes("audio")) return "Speaker";
+
+    // Generic HID — prompt user to pick
+    if (cls === 3) return "Mouse"; // default HID guess
+
+    return "Unknown";
 }
 
-function toggleAddForm(tag) {
-    const form = document.getElementById("form-" + tag);
-    if (!form) return;
-
-    form.style.display = form.style.display === "flex" ? "none" : "flex";
+function makeUniqueId(device) {
+    // WebUSB doesn't expose serial number directly without claiming interface
+    // Use vendorId + productId + index as stable enough ID
+    return `${device.vendorId.toString(16).padStart(4,"0")}-${device.productId.toString(16).padStart(4,"0")}`;
 }
-
-/* ============================================================
-   HELPERS
-   ============================================================ */
-
-function escapeHtml(value) {
-    if (value === null || value === undefined) return "";
-
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-}
-
-function normalizeStatus(status) {
-    return String(status || "unknown").toLowerCase().trim();
-}
-
-function renderStatusPill(status) {
-    const cleanStatus = normalizeStatus(status);
-
-    return `
-        <span class="status-pill status-${escapeHtml(cleanStatus)}">
-            ${escapeHtml(cleanStatus)}
-        </span>
-    `;
-}
-
-function normalizeTypeForForm(deviceType) {
-    const text = String(deviceType || "").toLowerCase();
-
-    if (text.includes("mouse")) return "Mouse";
-    if (text.includes("keyboard")) return "Keyboard";
-    if (text.includes("printer")) return "Printer";
-    if (text.includes("monitor")) return "Monitor";
-
-    if (
-        text.includes("headset") ||
-        text.includes("headphone") ||
-        text.includes("earphone") ||
-        text.includes("earbud")
-    ) {
-        return "Headphones";
-    }
-
-    return deviceType || "";
-}
-
-function normalizeTypeForBackend(deviceType) {
-    const text = String(deviceType || "").toLowerCase();
-
-    if (text.includes("mouse")) return "Mouse";
-    if (text.includes("keyboard")) return "Keyboard";
-    if (text.includes("printer")) return "Printer";
-    if (text.includes("monitor")) return "Monitor";
-
-    if (text.includes("headset")) return "Headset";
-
-    if (
-        text.includes("headphone") ||
-        text.includes("earphone") ||
-        text.includes("earbud")
-    ) {
-        return "Earphone";
-    }
-
-    return deviceType || "";
-}
-
-function showScanMessage(pcTag, message, type = "empty") {
-    const list = document.getElementById("scannedDevicesList-" + pcTag);
-    if (!list) return;
-
-    const className = type === "error" ? "scan-error-message" : "scan-empty-message";
-
-    list.innerHTML = `
-        <div class="${className}">
-            ${message}
-        </div>
-    `;
-}
-
-/* ============================================================
-   SCAN DEVICES
-   ============================================================ */
 
 async function scanConnectedDevices(pcTag, button) {
     const box = document.getElementById("scannedDevicesBox-" + pcTag);
-
-    if (!box) {
-        alert("Scan Devices section is missing for " + pcTag);
-        return;
-    }
+    if (!box) return;
 
     box.style.display = "block";
-    showScanMessage(pcTag, "Scanning connected physical devices...");
+    showScanMessage(pcTag, "Opening USB device selector...");
 
     if (button) {
         button.disabled = true;
@@ -507,33 +434,58 @@ async function scanConnectedDevices(pcTag, button) {
     }
 
     try {
-        const url = `/api/scan_devices?lab_id=${encodeURIComponent(currentLabId)}&pc_tag=${encodeURIComponent(pcTag)}`;
-
-        const response = await fetch(url);
-        const data = await response.json();
-
-        if (!data.success) {
-            showScanMessage(pcTag, data.message || "Failed to scan devices.", "error");
+        if (!navigator.usb) {
+            // WebUSB not available (non-Chrome or non-HTTPS) — fall back to server
+            await scanFromServer(pcTag);
             return;
         }
 
-        if (!data.devices || data.devices.length === 0) {
-            showScanMessage(
-                pcTag,
-                `No physical connected devices found for <strong>${escapeHtml(pcTag)}</strong>.<br>
-                 Make sure the device is plugged in and Flask is running on this same computer.`
-            );
+        // Ask user to pick a USB device — browser shows native OS picker
+        let device;
+        try {
+            device = await navigator.usb.requestDevice({ filters: [] });
+        } catch (e) {
+            // User cancelled the picker
+            showScanMessage(pcTag, "No device selected. Click Scan Devices and select a device from the popup.");
             return;
         }
 
-        renderScannedDevices(pcTag, data.devices);
+        const deviceType = normalizeUsbDeviceType(device);
+        const uniqueId = makeUniqueId(device);
 
-        // Update status table after scan.
+        const scannedDevice = {
+            unique_id: uniqueId,
+            name: device.productName || device.manufacturerName || deviceType,
+            device_type: deviceType,
+            vendor: device.manufacturerName || "Unknown",
+            product: device.productName || "Unknown",
+            serial_number: uniqueId,
+            vendorId: device.vendorId,
+            productId: device.productId
+        };
+
+        // Send to backend heartbeat so it's saved in detected_devices
+        await sendDeviceToHeartbeat(pcTag, scannedDevice);
+
+        // Show the device card for registration
+        renderScannedDevices(pcTag, [scannedDevice]);
+
+        // Allow selecting more devices
+        const addMoreBtn = document.createElement("button");
+        addMoreBtn.textContent = "+ Scan Another Device";
+        addMoreBtn.className = "scan-devices-btn";
+        addMoreBtn.style.marginTop = "10px";
+        addMoreBtn.onclick = () => scanConnectedDevices(pcTag, addMoreBtn);
+
+        const list = document.getElementById("scannedDevicesList-" + pcTag);
+        if (list) list.appendChild(addMoreBtn);
+
         refreshPeripheralStatuses();
 
     } catch (error) {
-        console.error("[SCAN ERROR]", error);
-        showScanMessage(pcTag, "Failed to scan devices. Check Flask terminal.", "error");
+        console.error("[WEBSUB SCAN ERROR]", error);
+        // Fallback to server-side detected_devices table
+        await scanFromServer(pcTag);
     } finally {
         if (button) {
             button.disabled = false;
@@ -542,399 +494,50 @@ async function scanConnectedDevices(pcTag, button) {
     }
 }
 
-function renderScannedDevices(pcTag, devices) {
-    const list = document.getElementById("scannedDevicesList-" + pcTag);
-    if (!list) return;
-
-    list.innerHTML = "";
-
-    devices.forEach(device => {
-        const card = document.createElement("div");
-        card.className = "scanned-device-card";
-
-        const deviceType = normalizeTypeForBackend(device.device_type);
-
-        card.innerHTML = `
-            <p class="scanned-device-name">
-                ${escapeHtml(device.name || "Unknown Device")}
-            </p>
-
-            <span class="scanned-device-type">
-                ${escapeHtml(deviceType || "unknown")}
-            </span>
-
-            <div class="scanned-device-info">
-                <strong>PC:</strong> ${escapeHtml(pcTag)}<br>
-                <strong>Unique ID:</strong> ${escapeHtml(device.unique_id || "")}<br>
-                <strong>Vendor:</strong> ${escapeHtml(device.vendor || "Unknown")}<br>
-                <strong>Product:</strong> ${escapeHtml(device.product || "Unknown")}<br>
-                <strong>Serial:</strong> ${escapeHtml(device.serial_number || device.unique_id || "N/A")}
-            </div>
-
-            <button type="button" class="register-scanned-btn">
-                Register This Device
-            </button>
-        `;
-
-        const registerBtn = card.querySelector(".register-scanned-btn");
-
-        registerBtn.addEventListener("click", function () {
-            fillFormFromScannedDevice(pcTag, device);
-            registerScannedDevice(pcTag, device, registerBtn);
-        });
-
-        list.appendChild(card);
-    });
-}
-
-function fillFormFromScannedDevice(pcTag, device) {
-    const typeInput = document.getElementById("type-" + pcTag);
-    const brandInput = document.getElementById("brand-" + pcTag);
-    const uniqueInput = document.getElementById("unique_id-" + pcTag);
-    const serialInput = document.getElementById("serial-" + pcTag);
-
-    if (typeInput) {
-        typeInput.value = normalizeTypeForForm(device.device_type);
-    }
-
-    if (brandInput) {
-        brandInput.value = device.vendor || device.name || "Unknown";
-    }
-
-    /*
-      Important:
-      Use the same physical unique_id for both fields.
-      This lets the backend compare the registered device against the scan.
-    */
-    if (uniqueInput) {
-        uniqueInput.value = device.unique_id || "";
-    }
-
-    if (serialInput) {
-        serialInput.value = device.unique_id || "";
-    }
-}
-
-/* ============================================================
-   REGISTER SCANNED DEVICE
-   ============================================================ */
-
-async function registerScannedDevice(pcTag, device, button) {
-    if (!device || !device.unique_id) {
-        alert("Invalid scanned device. Missing unique ID.");
-        return;
-    }
-
-    const backendType = normalizeTypeForBackend(device.device_type);
-
-    const payload = {
-        lab_id: currentLabId,
-        pc_tag: pcTag,
-        unique_id: device.unique_id,
-        name: backendType,
-        device_type: backendType,
-        brand: device.vendor || device.name || "Unknown",
-        vendor: device.vendor || "Unknown",
-        product: device.product || "Unknown",
-        serial_number: device.unique_id
-    };
-
-    if (button) {
-        button.disabled = true;
-        button.textContent = "Registering...";
-    }
-
+async function sendDeviceToHeartbeat(pcTag, device) {
     try {
-        const response = await fetch("/api/register_scanned_peripheral", {
+        await fetch("/api/agent/heartbeat", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(payload)
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                lab_id: currentLabId,
+                pc_tag: pcTag,
+                devices: [{
+                    unique_id: device.unique_id,
+                    name: device.name,
+                    device_type: device.device_type,
+                    vendor: device.vendor,
+                    product: device.product,
+                    serial_number: device.unique_id
+                }]
+            })
         });
-
-        const data = await response.json();
-
-        if (!data.success) {
-            alert(data.message || "Failed to register device.");
-
-            if (button) {
-                button.disabled = false;
-                button.textContent = "Register This Device";
-            }
-
-            return;
-        }
-
-        alert(data.message || "Device registered successfully.");
-
-        // Reload para lumabas agad sa table ang bagong registered peripheral.
-        location.reload();
-
-    } catch (error) {
-        console.error("[REGISTER ERROR]", error);
-        alert("Failed to register scanned device.");
-
-        if (button) {
-            button.disabled = false;
-            button.textContent = "Register This Device";
-        }
+    } catch (e) {
+        console.warn("[HEARTBEAT SEND ERROR]", e);
     }
 }
 
-/* ============================================================
-   MANUAL ADD PERIPHERAL
-   ============================================================ */
-
-function addPeripheralToPC(pcTag) {
-    const type = document.getElementById("type-" + pcTag).value;
-    const brand = document.getElementById("brand-" + pcTag).value;
-    const uniqueId = document.getElementById("unique_id-" + pcTag).value;
-    const serial = document.getElementById("serial-" + pcTag).value;
-
-    if (!type || !brand) {
-        alert("Select type and enter brand.");
-        return;
-    }
-
-    if (!uniqueId && !serial) {
-        alert("Please enter or scan the device Unique ID.");
-        return;
-    }
-
-    fetch(`/comlab/${currentLabId}/add_peripheral`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            pc_tag: pcTag,
-            name: type,
-            brand: brand,
-            unique_id: uniqueId || serial,
-            serial_number: serial || uniqueId
-        })
-    })
-    .then(response => response.json())
-    .then(resp => {
-        if (!resp.success) {
-            alert(resp.message || "Failed to add peripheral.");
-            return;
-        }
-
-        const p = resp.peripheral;
-        const table = document.getElementById("table-" + pcTag).getElementsByTagName("tbody")[0];
-        const row = table.insertRow();
-
-        row.id = "peripheral-" + p.id;
-        row.classList.add("fade-in");
-
-        row.innerHTML = `
-            <td>${escapeHtml(p.name)}</td>
-            <td>${escapeHtml(p.brand)}</td>
-            <td>${escapeHtml(p.unique_id || "")}</td>
-            <td>${escapeHtml(p.serial_number || "")}</td>
-            <td>${renderStatusPill(p.status || "connected")}</td>
-            <td class="action-buttons">
-                <button class="edit-btn" onclick="enableEdit('${p.id}')">Edit</button>
-                <button class="save-btn" onclick="saveEdit('${p.id}')">Save</button>
-                <button class="cancel-btn" onclick="cancelEdit('${p.id}')">Cancel</button>
-                <button class="remove-btn" onclick="deletePeripheral('${p.id}')">Remove</button>
-            </td>
-            <td>${escapeHtml(p.remarks || "")}</td>
-        `;
-
-        document.getElementById("type-" + pcTag).value = "";
-        document.getElementById("brand-" + pcTag).value = "";
-        document.getElementById("unique_id-" + pcTag).value = "";
-        document.getElementById("serial-" + pcTag).value = "";
-
-        refreshPeripheralStatuses();
-    })
-    .catch(error => {
-        console.error("[ADD MANUAL ERROR]", error);
-        alert("Failed to add peripheral.");
-    });
-}
-
-/* ============================================================
-   LIVE STATUS REFRESH
-   connected / unplugged / missing / faulty / replaced
-   ============================================================ */
-
-async function refreshPeripheralStatuses() {
+// Fallback: load whatever the server already has saved (from DetectionAgent or past scans)
+async function scanFromServer(pcTag) {
     try {
-        const response = await fetch(`/api/peripheral_statuses/${currentLabId}`);
+        const url = `/api/scan_devices?lab_id=${encodeURIComponent(currentLabId)}&pc_tag=${encodeURIComponent(pcTag)}`;
+        const response = await fetch(url);
         const data = await response.json();
 
-        if (!data.success) {
-            console.warn("[LIVE STATUS ERROR]", data.message);
+        if (!data.success || !data.devices || data.devices.length === 0) {
+            showScanMessage(
+                pcTag,
+                `WebUSB not available in this browser. Try using <strong>Chrome</strong> over <strong>HTTPS</strong> on the actual PC, or run the local DetectionAgent.`
+            );
             return;
         }
 
-        data.peripherals.forEach(peripheral => {
-            const row = document.getElementById("peripheral-" + peripheral.id);
-            if (!row) return;
-
-            /*
-              Table columns:
-              0 Device
-              1 Brand
-              2 Serial Number
-              3 Unique ID
-              4 Status
-              5 Action
-              6 Remarks
-            */
-            const statusCell = row.cells[4];
-
-            if (statusCell) {
-                statusCell.innerHTML = renderStatusPill(peripheral.status);
-            }
-        });
-
-    } catch (error) {
-        console.error("[LIVE STATUS FETCH ERROR]", error);
+        renderScannedDevices(pcTag, data.devices);
+        refreshPeripheralStatuses();
+    } catch (e) {
+        showScanMessage(pcTag, "Failed to load devices. Try Chrome over HTTPS.", "error");
     }
 }
-
-/* ============================================================
-   INLINE EDIT
-   ============================================================ */
-
-function enableEdit(id) {
-    const row = document.getElementById("peripheral-" + id);
-    if (!row) return;
-
-    const cells = row.cells;
-
-    row.dataset.original = JSON.stringify({
-        type: cells[0].innerText,
-        brand: cells[1].innerText,
-        unique_id: cells[2].innerText,
-        serial: cells[3].innerText,
-        remarks: cells[6].innerText
-    });
-
-    cells[0].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[0].innerText)}">`;
-    cells[1].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[1].innerText)}">`;
-    cells[2].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[2].innerText)}">`;
-    cells[3].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[3].innerText)}">`;
-    cells[6].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[6].innerText)}">`;
-
-    row.querySelector(".edit-btn").style.display = "none";
-    row.querySelector(".save-btn").style.display = "inline-block";
-    row.querySelector(".cancel-btn").style.display = "inline-block";
-}
-
-function cancelEdit(id) {
-    const row = document.getElementById("peripheral-" + id);
-    if (!row || !row.dataset.original) return;
-
-    const orig = JSON.parse(row.dataset.original);
-
-    row.cells[0].innerText = orig.type;
-    row.cells[1].innerText = orig.brand;
-    row.cells[2].innerText = orig.unique_id;
-    row.cells[3].innerText = orig.serial;
-    row.cells[6].innerText = orig.remarks;
-
-    row.querySelector(".edit-btn").style.display = "inline-block";
-    row.querySelector(".save-btn").style.display = "none";
-    row.querySelector(".cancel-btn").style.display = "none";
-}
-
-function saveEdit(id) {
-    const row = document.getElementById("peripheral-" + id);
-    if (!row) return;
-
-    const inputs = row.querySelectorAll("input.inline-edit");
-
-    const type = inputs[0].value;
-    const brand = inputs[1].value;
-    const uniqueId = inputs[2].value;
-    const serial = inputs[3].value;
-    const remarks = inputs[4].value;
-
-    fetch("/api/edit_peripheral", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            id: id,
-            name: type,
-            brand: brand,
-            unique_id: uniqueId,
-            serial_number: serial,
-            remarks: remarks
-        })
-    })
-    .then(response => response.json())
-    .then(resp => {
-        if (!resp.success) {
-            alert(resp.message || "Failed to save.");
-            return;
-        }
-
-        row.cells[0].innerText = type;
-        row.cells[1].innerText = brand;
-        row.cells[2].innerText = uniqueId;
-        row.cells[3].innerText = serial;
-        row.cells[6].innerText = remarks;
-
-        row.querySelector(".edit-btn").style.display = "inline-block";
-        row.querySelector(".save-btn").style.display = "none";
-        row.querySelector(".cancel-btn").style.display = "none";
-
-        refreshPeripheralStatuses();
-    })
-    .catch(error => {
-        console.error("[SAVE ERROR]", error);
-        alert("Failed to save.");
-    });
-}
-
-/* ============================================================
-   DELETE
-   ============================================================ */
-
-function deletePeripheral(id) {
-    if (!confirm("Remove peripheral?")) return;
-
-    fetch("/api/delete_peripheral", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ id: id })
-    })
-    .then(response => response.json())
-    .then(resp => {
-        if (!resp.success) {
-            alert(resp.message || "Failed to delete.");
-            return;
-        }
-
-        const row = document.getElementById("peripheral-" + id);
-        if (row) row.remove();
-    })
-    .catch(error => {
-        console.error("[DELETE ERROR]", error);
-        alert("Failed to delete.");
-    });
-}
-
-/* ============================================================
-   AUTO START LIVE STATUS
-   ============================================================ */
-
-document.addEventListener("DOMContentLoaded", function () {
-    refreshPeripheralStatuses();
-
-    // Updates status every 3 seconds without page reload.
-    setInterval(refreshPeripheralStatuses, 3000);
-});
 </script>
 
 </body>
