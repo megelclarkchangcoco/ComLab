@@ -2609,13 +2609,18 @@ def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
 @app.route("/api/agent/heartbeat", methods=["POST"])
 def agent_heartbeat():
     """
-    Optional compatibility endpoint.
-    You do not need to run Peripherals_detection.py anymore.
+    Receives connected physical devices from the local DetectionAgent.
+
+    This is the correct scanner flow for Render:
+        PC-Win33 local agent scans USB devices
+        local agent sends devices here
+        Render saves devices into detected_devices
+        Inventory Scan Devices reads detected_devices
     """
     data = request.get_json(silent=True) or {}
 
-    lab_id = data.get("lab_id")
-    pc_tag = data.get("pc_tag")
+    lab_id = str(data.get("lab_id") or "").strip()
+    pc_tag = str(data.get("pc_tag") or data.get("device_name") or "").strip()
     devices = data.get("devices", [])
 
     if not lab_id or not pc_tag:
@@ -2624,21 +2629,77 @@ def agent_heartbeat():
             "message": "lab_id and pc_tag are required."
         }), 400
 
+    if not isinstance(devices, list):
+        return jsonify({
+            "success": False,
+            "message": "devices must be a list."
+        }), 400
+
+    # Make sure PC exists before saving agent data.
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id
+            FROM devices
+            WHERE tag = ?
+              AND (location = ? OR comlab_id = ?)
+            LIMIT 1
+        """, (pc_tag, str(lab_id), lab_id))
+        pc_exists = cur.fetchone()
+
+    if not pc_exists:
+        return jsonify({
+            "success": False,
+            "message": f"PC '{pc_tag}' is not registered in Lab {lab_id}."
+        }), 404
+
+    cleaned_devices = []
+
+    for dev in devices:
+        if not isinstance(dev, dict):
+            continue
+
+        unique_id = str(dev.get("unique_id") or dev.get("serial_number") or "").strip()
+        device_type = normalize_scanned_device_type(dev.get("device_type") or dev.get("name"))
+
+        if not unique_id:
+            continue
+
+        if device_type == "Unknown":
+            continue
+
+        cleaned_devices.append({
+            "unique_id": unique_id,
+            "name": dev.get("name") or device_type,
+            "device_type": device_type,
+            "vendor": dev.get("vendor") or "Unknown",
+            "product": dev.get("product") or "Unknown",
+            "serial_number": dev.get("serial_number") or unique_id
+        })
+
     ensure_detected_devices_table()
-    embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices)
+    embedded_save_detected_devices_and_update_status(lab_id, pc_tag, cleaned_devices)
 
     return jsonify({
         "success": True,
         "message": "Heartbeat saved.",
-        "device_count": len(devices)
+        "pc_tag": pc_tag,
+        "lab_id": lab_id,
+        "device_count": len(cleaned_devices),
+        "devices": cleaned_devices
     })
-
 
 @app.route("/api/scan_devices", methods=["GET"])
 def scan_devices():
     """
     Called by inventory.html when clicking Scan Devices.
-    It does a live physical scan, then returns only connected physical devices.
+
+    Local Windows mode:
+        Tries live physical scan only when Flask is running on Windows.
+
+    Render/cloud mode:
+        Returns devices previously sent by local DetectionAgent through
+        /api/agent/heartbeat. Render cannot scan client USB ports directly.
     """
     lab_id = request.args.get("lab_id")
     pc_tag = request.args.get("pc_tag")
@@ -2652,15 +2713,22 @@ def scan_devices():
     try:
         ensure_detected_devices_table()
 
-        live_devices = embedded_get_connected_devices()
+        live_devices = []
 
-        print(f"[LIVE SCAN] Requested PC: {pc_tag} | Lab: {lab_id}")
-        print(f"[LIVE SCAN] Found physical devices: {len(live_devices)}")
+        # Try local live scan only on Windows.
+        # On Render/Linux, this will not work because the USB devices are on the client PC.
+        if os.name == "nt":
+            try:
+                live_devices = embedded_get_connected_devices()
+                print(f"[LIVE SCAN] Requested PC: {pc_tag} | Lab: {lab_id}")
+                print(f"[LIVE SCAN] Found physical devices: {len(live_devices)}")
+                for device in live_devices:
+                    print("[LIVE SCAN DEVICE]", device)
 
-        for device in live_devices:
-            print("[LIVE SCAN DEVICE]", device)
-
-        embedded_save_detected_devices_and_update_status(lab_id, pc_tag, live_devices)
+                if live_devices:
+                    embedded_save_detected_devices_and_update_status(lab_id, pc_tag, live_devices)
+            except Exception as scan_error:
+                print("[LOCAL LIVE SCAN ERROR]", scan_error)
 
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -2689,9 +2757,18 @@ def scan_devices():
         devices = [dict(row) for row in cur.fetchall()]
         conn.close()
 
+        message = "Detected devices loaded."
+        if not devices:
+            message = (
+                "No physical connected devices found. "
+                "If this app is deployed on Render, run the local DetectionAgent on this PC first."
+            )
+
         return jsonify({
             "success": True,
-            "devices": devices
+            "devices": devices,
+            "message": message,
+            "source": "local_live_scan" if live_devices else "agent_saved_devices"
         })
 
     except Exception as e:
@@ -2700,7 +2777,6 @@ def scan_devices():
             "success": False,
             "message": str(e)
         }), 500
-
 
 @app.route("/api/register_scanned_peripheral", methods=["POST"])
 def register_scanned_peripheral():
@@ -2835,32 +2911,51 @@ def register_scanned_peripheral():
 
 @app.route("/api/agent/identify_pc", methods=["GET"])
 def agent_identify_pc():
+    """
+    Used by local DetectionAgent.
+    It can identify a PC by pc_tag first, then hostname fallback.
+
+    Example:
+        /api/agent/identify_pc?pc_tag=PC-Win33
+        /api/agent/identify_pc?hostname=DESKTOP-ABC123
+    """
+    pc_tag = request.args.get("pc_tag", "").strip()
     hostname = request.args.get("hostname", "").strip()
 
-    if not hostname:
+    if not pc_tag and not hostname:
         return jsonify({
             "success": False,
-            "message": "hostname is required."
+            "message": "pc_tag or hostname is required."
         }), 400
 
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT id, tag, location, comlab_id, hostname
-        FROM devices
-        WHERE LOWER(hostname) = LOWER(?)
-        LIMIT 1
-    """, (hostname,))
+    if pc_tag:
+        cur.execute("""
+            SELECT id, tag, location, comlab_id, hostname
+            FROM devices
+            WHERE LOWER(tag) = LOWER(?)
+            LIMIT 1
+        """, (pc_tag,))
+    else:
+        cur.execute("""
+            SELECT id, tag, location, comlab_id, hostname
+            FROM devices
+            WHERE LOWER(hostname) = LOWER(?)
+               OR LOWER(tag) = LOWER(?)
+            LIMIT 1
+        """, (hostname, hostname))
 
     row = cur.fetchone()
     conn.close()
 
     if not row:
+        identity = pc_tag or hostname
         return jsonify({
             "success": False,
-            "message": f"This PC hostname '{hostname}' is not registered in devices table."
+            "message": f"This PC '{identity}' is not registered in devices table."
         }), 404
 
     lab_id = row["comlab_id"] if row["comlab_id"] else row["location"]
@@ -2871,7 +2966,6 @@ def agent_identify_pc():
         "pc_tag": row["tag"],
         "lab_id": lab_id
     })
-
 
 @app.route("/api/peripheral_statuses/<int:comlab_id>")
 def api_peripheral_statuses(comlab_id):
