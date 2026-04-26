@@ -3022,6 +3022,85 @@ def start_embedded_detection_agent():
     thread = threading.Thread(target=embedded_detection_loop, daemon=True)
     thread.start()
 
+@app.route("/link_pc_browser/<int:comlab_id>/<pc_tag>")
+def link_pc_browser(comlab_id, pc_tag):
+    """
+    Admin-only route.
+    Use this when the PC already exists in devices table,
+    but the current browser does not have the comlab_device_key cookie.
+
+    Open this route on the actual PC/browser that students will use.
+    """
+    if "username" not in session or session.get("role") != "admin":
+        return "Unauthorized. Admin login required.", 403
+
+    ensure_device_key_column()
+
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT id, tag, location, comlab_id, device_key
+            FROM devices
+            WHERE tag = ?
+              AND (location = ? OR comlab_id = ?)
+            LIMIT 1
+        """, (pc_tag, str(comlab_id), comlab_id))
+
+        device = cur.fetchone()
+
+        if not device:
+            flash(f"PC '{pc_tag}' was not found in ComLab {comlab_id}.", "error")
+            return redirect(url_for("comlab_inventory", lab_id=comlab_id))
+
+        device_key = secrets.token_urlsafe(32)
+
+        cur.execute("""
+            UPDATE devices
+            SET device_key = ?
+            WHERE id = ?
+        """, (device_key, device["id"]))
+
+        conn.commit()
+
+    response = make_response(redirect(url_for("login")))
+    response.set_cookie(
+        "comlab_device_key",
+        device_key,
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        samesite="Lax"
+    )
+
+    flash(f"This browser is now linked to {pc_tag}. Student/professor can now login here.", "success")
+    return response
+
+@app.route("/debug/device_cookie")
+def debug_device_cookie():
+    registered_pc = resolve_registered_pc_from_cookie()
+    device_key = request.cookies.get("comlab_device_key")
+
+    if not device_key:
+        return jsonify({
+            "has_cookie": False,
+            "message": "No comlab_device_key cookie found in this browser."
+        })
+
+    if not registered_pc:
+        return jsonify({
+            "has_cookie": True,
+            "registered_pc_found": False,
+            "message": "Cookie exists, but no matching device was found in database."
+        })
+
+    return jsonify({
+        "has_cookie": True,
+        "registered_pc_found": True,
+        "pc_tag": registered_pc["tag"],
+        "location": registered_pc["location"],
+        "comlab_id": registered_pc["comlab_id"]
+    })
 
 if __name__ == "__main__":
     # Embedded scanner is for local testing only.
