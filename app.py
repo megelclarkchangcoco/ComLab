@@ -138,31 +138,12 @@ def login():
         or ""
     ).strip()
 
-    # If no pc_tag was passed, try to detect PC from request IP.
     if not pc_tag:
-        client_ip = request.remote_addr
-
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-
-            cur.execute("""
-                SELECT tag
-                FROM devices
-                WHERE ip_address = ?
-                LIMIT 1
-            """, (client_ip,))
-
-            pc_row = cur.fetchone()
-
-            if pc_row:
-                pc_tag = pc_row["tag"]
-            else:
-                pc_tag = socket.gethostname()
+        pc_tag = socket.gethostname()
 
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
         login_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         with sqlite3.connect(DB_FILE) as conn:
@@ -175,44 +156,52 @@ def login():
             """, (username,))
             row = cur.fetchone()
 
-            if row:
-                username_db, password_db, role, status, student_name = row
+            if not row:
+                flash("Invalid username or password!", "error")
+                return redirect(url_for("login", pc_tag=pc_tag))
 
-                if status == "pending":
-                    flash("Your account is pending. Please wait for admin approval.", "error")
-                    return redirect(url_for("login", pc_tag=pc_tag))
+            username_db, password_db, role, status, student_name = row
 
-                if check_password_hash(password_db, password):
-                    session["username"] = username_db
-                    session["role"] = role
-                    session["pc_tag"] = pc_tag
+            if status == "pending":
+                flash("Your account is pending. Please wait for admin approval.", "error")
+                return redirect(url_for("login", pc_tag=pc_tag))
 
-                    flash("Login successful!", "success")
+            if not check_password_hash(password_db, password):
+                flash("Invalid username or password!", "error")
+                return redirect(url_for("login", pc_tag=pc_tag))
 
-                    if role == "admin":
-                        return redirect("/admin")
+            # Save session
+            session["username"] = username_db
+            session["role"] = role
+            session["pc_tag"] = pc_tag
+            session["login_time"] = int(time.time())
+            session.modified = True
 
-                    if role in ["user", "professor"]:
-                        # Remove previous login of same user or same PC
-                        cur.execute("""
-                            DELETE FROM active_sessions
-                            WHERE student_id = ?
-                               OR pc_tag = ?
-                        """, (username_db, pc_tag))
+            if role == "admin":
+                return redirect(url_for("admin_dashboard"))
 
-                        cur.execute("""
-                            INSERT INTO active_sessions
-                            (pc_tag, student_id, login_time, student_name)
-                            VALUES (?, ?, ?, ?)
-                        """, (pc_tag, username_db, login_time, student_name))
+            if role in ["user", "professor"]:
+                cur.execute("""
+                    DELETE FROM active_sessions
+                    WHERE student_id = ?
+                       OR pc_tag = ?
+                """, (username_db, pc_tag))
 
-                        conn.commit()
-                        return redirect("/student_dashboard")
+                cur.execute("""
+                    INSERT INTO active_sessions
+                    (pc_tag, student_id, login_time, student_name)
+                    VALUES (?, ?, ?, ?)
+                """, (pc_tag, username_db, login_time, student_name))
 
-        flash("Invalid username or password!", "error")
-        return redirect(url_for("login", pc_tag=pc_tag))
+                conn.commit()
+
+                return redirect(url_for("student_dashboard"))
+
+            flash("Unknown account role.", "error")
+            return redirect(url_for("login", pc_tag=pc_tag))
 
     return render_template("login.html", pc_tag=pc_tag)
+
 # ---------------- ADMIN DASHBOARD ----------------
 @app.route("/admin")
 def admin_dashboard():
