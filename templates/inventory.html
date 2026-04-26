@@ -533,7 +533,7 @@ input.inline-edit {
 
                 <p class="webusb-notice">
                     Requires <strong>Chrome</strong> or <strong>Edge</strong> over HTTPS.
-                    A USB device picker will open — select the device plugged into this PC.
+                    Select the device from the USB picker. Keep this page open or click <strong>Scan Devices</strong> again after unplugging to update status.
                 </p>
 
                 <!-- Scanned results box -->
@@ -694,8 +694,25 @@ function showScanMessage(pcTag, message, type = "empty") {
     list.innerHTML = `<div class="${cls}">${message}</div>`;
 }
 
+function cleanIdPart(value) {
+    return String(value || "")
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+}
+
 function makeUniqueId(device) {
-    return `${device.vendorId.toString(16).padStart(4,"0")}-${device.productId.toString(16).padStart(4,"0")}`;
+    const vendorId  = device.vendorId  ? device.vendorId.toString(16).padStart(4, "0") : "0000";
+    const productId = device.productId ? device.productId.toString(16).padStart(4, "0") : "0000";
+
+    // WebUSB does not always expose a real serial number, especially for HID devices.
+    // Use serialNumber when available. Otherwise include product/manufacturer so it is
+    // more stable than vendorId-productId alone.
+    const serial = cleanIdPart(device.serialNumber || "");
+    const name   = cleanIdPart(device.productName || device.manufacturerName || "USB_DEVICE");
+
+    if (serial) return `${vendorId}-${productId}-${serial}`;
+    return `${vendorId}-${productId}-${name}`;
 }
 
 function normalizeUsbDeviceType(device) {
@@ -716,6 +733,94 @@ function normalizeUsbDeviceType(device) {
     return "Unknown";
 }
 
+
+async function collectAuthorizedUsbDevices() {
+    if (!navigator.usb) return [];
+
+    const usbDevices = await navigator.usb.getDevices();
+
+    return usbDevices.map(device => {
+        const deviceType = normalizeUsbDeviceType(device);
+        const uniqueId   = makeUniqueId(device);
+
+        return {
+            unique_id:     uniqueId,
+            name:          device.productName || device.manufacturerName || deviceType,
+            device_type:   deviceType,
+            vendor:        device.manufacturerName || "Unknown",
+            product:       device.productName || "Unknown",
+            serial_number: device.serialNumber || uniqueId,
+            vendorId:      device.vendorId || null,
+            productId:     device.productId || null
+        };
+    }).filter(device => {
+        const type = normalizeTypeForBackend(device.device_type);
+        return device.unique_id && type && type !== "Unknown";
+    });
+}
+
+async function syncWebUsbDevices(pcTag, options = {}) {
+    if (!navigator.usb || !pcTag) return null;
+
+    try {
+        const devices = await collectAuthorizedUsbDevices();
+
+        const res = await fetch("/api/webusb_sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                lab_id: currentLabId,
+                pc_tag: pcTag,
+                devices: devices
+            })
+        });
+
+        const data = await res.json();
+
+        if (!data.success) {
+            if (!options.silent) console.warn("[WEBUSB SYNC WARNING]", data.message);
+            return data;
+        }
+
+        if (data.peripherals) {
+            data.peripherals.forEach(p => {
+                const row = document.getElementById("peripheral-" + p.id);
+                if (!row) return;
+                const statusCell = row.cells[4];
+                if (statusCell) statusCell.innerHTML = renderStatusPill(p.status);
+            });
+        }
+
+        return data;
+    } catch (e) {
+        if (!options.silent) console.error("[WEBUSB SYNC ERROR]", e);
+        return null;
+    }
+}
+
+function setActiveScanPc(pcTag) {
+    try {
+        localStorage.setItem("activeScanPc-" + currentLabId, pcTag);
+    } catch (e) {}
+}
+
+function getActiveScanPc() {
+    try {
+        return localStorage.getItem("activeScanPc-" + currentLabId);
+    } catch (e) {
+        return null;
+    }
+}
+
+async function syncActiveScanPc(options = {}) {
+    const pcTag = getActiveScanPc();
+    if (!pcTag) return;
+
+    await syncWebUsbDevices(pcTag, options);
+    await refreshPeripheralStatuses();
+}
+
+
 /* ============================================================
    WEBUSB SCAN
    ============================================================ */
@@ -724,6 +829,7 @@ async function scanConnectedDevices(pcTag, button) {
     const list = document.getElementById("scannedDevicesList-" + pcTag);
     if (!box || !list) return;
 
+    setActiveScanPc(pcTag);
     box.style.display = "block";
 
     if (button) {
@@ -732,58 +838,66 @@ async function scanConnectedDevices(pcTag, button) {
     }
 
     try {
-        /* ---- WebUSB path (Chrome / Edge over HTTPS or localhost) ---- */
-        if (navigator.usb) {
-            let usbDevice;
-            try {
-                usbDevice = await navigator.usb.requestDevice({ filters: [] });
-            } catch (e) {
-                // User dismissed the picker
-                showScanMessage(pcTag,
-                    `No device selected. Click <strong>Scan Devices</strong> again and choose a device from the popup.`,
-                    "info");
-                return;
-            }
-
-            const deviceType = normalizeUsbDeviceType(usbDevice);
-            const uniqueId   = makeUniqueId(usbDevice);
-
-            const scannedDevice = {
-                unique_id:     uniqueId,
-                name:          usbDevice.productName || usbDevice.manufacturerName || deviceType,
-                device_type:   deviceType,
-                vendor:        usbDevice.manufacturerName || "Unknown",
-                product:       usbDevice.productName     || "Unknown",
-                serial_number: uniqueId,
-                vendorId:      usbDevice.vendorId,
-                productId:     usbDevice.productId
-            };
-
-            // Save to backend so it persists in detected_devices
-            await sendDeviceToHeartbeat(pcTag, scannedDevice);
-
-            // Add card to list (append, don't replace, so user can scan multiple)
-            appendScannedDeviceCard(pcTag, scannedDevice);
-
-            // Show "scan another" button if not already there
-            if (!document.getElementById("scanMore-" + pcTag)) {
-                const moreBtn = document.createElement("button");
-                moreBtn.id        = "scanMore-" + pcTag;
-                moreBtn.className = "scan-add-more-btn";
-                moreBtn.innerHTML = `<i class="fas fa-plus"></i> Scan Another Device`;
-                moreBtn.onclick   = () => scanConnectedDevices(pcTag, moreBtn);
-                list.appendChild(moreBtn);
-            }
-
-            refreshPeripheralStatuses();
-
-        } else {
-            /* ---- Fallback: load from server detected_devices ---- */
+        if (!navigator.usb) {
             await scanFromServer(pcTag);
+            return;
         }
 
+        let usbDevice = null;
+
+        try {
+            usbDevice = await navigator.usb.requestDevice({ filters: [] });
+        } catch (e) {
+            // User dismissed the picker.
+            // Still sync already-authorized devices. If the unplugged device is gone,
+            // this sends the current list and backend can mark it unplugged.
+            const syncData = await syncWebUsbDevices(pcTag);
+
+            if (syncData && syncData.devices && syncData.devices.length > 0) {
+                renderScannedDevices(pcTag, syncData.devices);
+            }
+
+            showScanMessage(pcTag,
+                `Device picker was cancelled. Current authorized devices were synced.`,
+                "info");
+
+            await refreshPeripheralStatuses();
+            return;
+        }
+
+        const deviceType = normalizeUsbDeviceType(usbDevice);
+        const uniqueId   = makeUniqueId(usbDevice);
+
+        const scannedDevice = {
+            unique_id:     uniqueId,
+            name:          usbDevice.productName || usbDevice.manufacturerName || deviceType,
+            device_type:   deviceType,
+            vendor:        usbDevice.manufacturerName || "Unknown",
+            product:       usbDevice.productName || "Unknown",
+            serial_number: usbDevice.serialNumber || uniqueId,
+            vendorId:      usbDevice.vendorId,
+            productId:     usbDevice.productId
+        };
+
+        // Sync all currently authorized WebUSB devices for this clicked PC.
+        // This is what updates connected/unplugged/missing/faulty/replaced without DetectionAgent.
+        await syncWebUsbDevices(pcTag);
+
+        appendScannedDeviceCard(pcTag, scannedDevice);
+
+        if (!document.getElementById("scanMore-" + pcTag)) {
+            const moreBtn = document.createElement("button");
+            moreBtn.id        = "scanMore-" + pcTag;
+            moreBtn.className = "scan-add-more-btn";
+            moreBtn.innerHTML = `<i class="fas fa-plus"></i> Scan Another / Refresh Status`;
+            moreBtn.onclick   = () => scanConnectedDevices(pcTag, moreBtn);
+            list.appendChild(moreBtn);
+        }
+
+        refreshPeripheralStatuses();
+
     } catch (error) {
-        console.error("[WEBSUB SCAN ERROR]", error);
+        console.error("[WEBUSB SCAN ERROR]", error);
         await scanFromServer(pcTag);
     } finally {
         if (button) {
@@ -794,8 +908,9 @@ async function scanConnectedDevices(pcTag, button) {
 }
 
 async function sendDeviceToHeartbeat(pcTag, device) {
+    // Kept for compatibility. Use WebUSB sync route so app.py owns the status logic.
     try {
-        await fetch("/api/agent/heartbeat", {
+        await fetch("/api/webusb_sync", {
             method:  "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -807,12 +922,12 @@ async function sendDeviceToHeartbeat(pcTag, device) {
                     device_type:   device.device_type,
                     vendor:        device.vendor,
                     product:       device.product,
-                    serial_number: device.unique_id
+                    serial_number: device.serial_number || device.unique_id
                 }]
             })
         });
     } catch (e) {
-        console.warn("[HEARTBEAT SEND ERROR]", e);
+        console.warn("[WEBUSB SYNC SEND ERROR]", e);
     }
 }
 
@@ -950,7 +1065,7 @@ async function registerScannedDevice(pcTag, device, button, card) {
         brand:         device.vendor || device.name || "Unknown",
         vendor:        device.vendor  || "Unknown",
         product:       device.product || "Unknown",
-        serial_number: device.unique_id
+        serial_number: device.serial_number || device.unique_id
     };
 
     if (button) {
@@ -1195,7 +1310,20 @@ function deletePeripheral(id) {
    ============================================================ */
 document.addEventListener("DOMContentLoaded", function () {
     refreshPeripheralStatuses();
+
+    // Refresh status from database.
     setInterval(refreshPeripheralStatuses, 3000);
+
+    // Browser/WebUSB sync. This is the no-DetectionAgent path.
+    // It syncs the last PC card where you clicked Scan Devices.
+    if (navigator.usb) {
+        navigator.usb.addEventListener("connect", () => syncActiveScanPc({ silent: true }));
+        navigator.usb.addEventListener("disconnect", () => syncActiveScanPc({ silent: true }));
+
+        setInterval(() => {
+            syncActiveScanPc({ silent: true });
+        }, 3000);
+    }
 });
 </script>
 

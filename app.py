@@ -2851,6 +2851,124 @@ def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
         print("[EMBEDDED SAVE/STATUS ERROR]", e)
 
 
+
+@app.route("/api/webusb_sync", methods=["POST"])
+def api_webusb_sync():
+    """
+    Browser/WebUSB status sync.
+
+    This route lets inventory.html update device statuses without running
+    a separate DetectionAgent. The browser sends the currently authorized
+    WebUSB devices for the clicked PC. The server compares that current list
+    with the previous list and updates connected, unplugged, missing, faulty,
+    and replaced.
+    """
+    data = request.get_json(silent=True) or {}
+
+    lab_id = str(data.get("lab_id") or "").strip()
+    pc_tag = str(data.get("pc_tag") or "").strip()
+    devices = data.get("devices", [])
+
+    if not lab_id or not pc_tag:
+        return jsonify({
+            "success": False,
+            "message": "lab_id and pc_tag are required."
+        }), 400
+
+    if not isinstance(devices, list):
+        return jsonify({
+            "success": False,
+            "message": "devices must be a list."
+        }), 400
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id
+                FROM devices
+                WHERE tag = ?
+                  AND (location = ? OR comlab_id = ?)
+                LIMIT 1
+            """, (pc_tag, lab_id, lab_id))
+            pc_exists = cur.fetchone()
+
+        if not pc_exists:
+            return jsonify({
+                "success": False,
+                "message": f"PC '{pc_tag}' is not registered in Lab {lab_id}."
+            }), 404
+
+        cleaned_devices = []
+
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+
+            unique_id = str(dev.get("unique_id") or dev.get("serial_number") or "").strip()
+            device_type = normalize_scanned_device_type(dev.get("device_type") or dev.get("name"))
+            serial_number = str(dev.get("serial_number") or unique_id).strip()
+
+            if not unique_id:
+                continue
+
+            if not device_type or device_type == "Unknown":
+                continue
+
+            cleaned_devices.append({
+                "unique_id": unique_id,
+                "name": dev.get("name") or device_type,
+                "device_type": device_type,
+                "vendor": dev.get("vendor") or "Unknown",
+                "product": dev.get("product") or "Unknown",
+                "serial_number": serial_number
+            })
+
+        ensure_detected_devices_table()
+        embedded_save_detected_devices_and_update_status(lab_id, pc_tag, cleaned_devices)
+
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT id, name, assigned_pc, status, remarks
+                FROM peripherals
+                WHERE lab_id = ?
+                  AND assigned_pc = ?
+                ORDER BY name ASC
+            """, (lab_id, pc_tag))
+            peripherals = [dict(row) for row in cur.fetchall()]
+
+            cur.execute("""
+                SELECT id, lab_id, pc_tag, unique_id, name, device_type,
+                       vendor, product, serial_number, status, last_seen
+                FROM detected_devices
+                WHERE lab_id = ?
+                  AND pc_tag = ?
+                  AND status = 'connected'
+                ORDER BY datetime(last_seen) DESC
+            """, (lab_id, pc_tag))
+            detected = [dict(row) for row in cur.fetchall()]
+
+        return jsonify({
+            "success": True,
+            "message": "WebUSB status synced.",
+            "pc_tag": pc_tag,
+            "lab_id": lab_id,
+            "device_count": len(cleaned_devices),
+            "devices": detected,
+            "peripherals": peripherals
+        })
+
+    except Exception as e:
+        print("[WEBUSB SYNC ERROR]", e)
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
 @app.route("/api/agent/heartbeat", methods=["POST"])
 def agent_heartbeat():
     """
@@ -3006,7 +3124,7 @@ def scan_devices():
         if not devices:
             message = (
                 "No physical connected devices found. "
-                "If this app is deployed on Render, run the local DetectionAgent on this PC first."
+                "If this app is deployed on Render, use the WebUSB Scan Devices button in Chrome/Edge on the actual PC."
             )
 
         return jsonify({
@@ -3026,15 +3144,20 @@ def scan_devices():
 @app.route("/api/register_scanned_peripheral", methods=["POST"])
 def register_scanned_peripheral():
     """
-    Registers selected physical scanned device into peripherals.
+    Registers selected scanned/WebUSB device into peripherals.
+
+    Serial Number rule:
+    - Use browser/device serial if available.
+    - If unavailable, use the same generated ID as unique_id.
     """
     data = request.get_json(silent=True) or {}
 
-    lab_id = data.get("lab_id")
-    pc_tag = data.get("pc_tag")
-    unique_id = data.get("unique_id")
-    device_type = normalize_scanned_device_type(data.get("device_type"))
-    brand = data.get("brand") or data.get("vendor") or "Unknown"
+    lab_id = str(data.get("lab_id") or "").strip()
+    pc_tag = str(data.get("pc_tag") or "").strip()
+    unique_id = str(data.get("unique_id") or "").strip()
+    serial_number = str(data.get("serial_number") or unique_id).strip()
+    device_type = normalize_scanned_device_type(data.get("device_type") or data.get("name"))
+    brand = data.get("brand") or data.get("vendor") or data.get("product") or "Unknown"
     remarks = data.get("remarks") or ""
 
     if not lab_id or not pc_tag or not unique_id:
@@ -3057,9 +3180,9 @@ def register_scanned_peripheral():
             SELECT id
             FROM devices
             WHERE tag = ?
-              AND location = ?
+              AND (location = ? OR comlab_id = ?)
             LIMIT 1
-        """, (pc_tag, str(lab_id)))
+        """, (pc_tag, lab_id, lab_id))
 
         pc_exists = cur.fetchone()
 
@@ -3076,7 +3199,7 @@ def register_scanned_peripheral():
             WHERE unique_id = ?
                OR serial_number = ?
             LIMIT 1
-        """, (unique_id, unique_id))
+        """, (unique_id, serial_number))
 
         existing_unique = cur.fetchone()
 
@@ -3101,7 +3224,7 @@ def register_scanned_peripheral():
               AND lab_id = ?
               AND LOWER(name) IN ({placeholders})
             LIMIT 1
-        """, [pc_tag, str(lab_id)] + candidates)
+        """, [pc_tag, lab_id] + candidates)
 
         existing_type = cur.fetchone()
 
@@ -3120,15 +3243,44 @@ def register_scanned_peripheral():
             device_type,
             brand,
             unique_id,
-            unique_id,
+            serial_number,
             "connected",
             remarks,
-            str(lab_id),
+            lab_id,
             pc_tag
         ))
 
-        conn.commit()
         peripheral_id = cur.lastrowid
+
+        ensure_detected_devices_table()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cur.execute("""
+            INSERT INTO detected_devices
+            (lab_id, pc_tag, unique_id, name, device_type, vendor, product, serial_number, status, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+            ON CONFLICT(lab_id, pc_tag, unique_id)
+            DO UPDATE SET
+                name = excluded.name,
+                device_type = excluded.device_type,
+                vendor = excluded.vendor,
+                product = excluded.product,
+                serial_number = excluded.serial_number,
+                status = 'connected',
+                last_seen = excluded.last_seen
+        """, (
+            lab_id,
+            pc_tag,
+            unique_id,
+            data.get("name") or device_type,
+            device_type,
+            data.get("vendor") or "Unknown",
+            data.get("product") or "Unknown",
+            serial_number,
+            now
+        ))
+
+        conn.commit()
         conn.close()
 
         return jsonify({
@@ -3139,7 +3291,7 @@ def register_scanned_peripheral():
                 "name": device_type,
                 "brand": brand,
                 "unique_id": unique_id,
-                "serial_number": unique_id,
+                "serial_number": serial_number,
                 "status": "connected",
                 "remarks": remarks,
                 "lab_id": lab_id,
