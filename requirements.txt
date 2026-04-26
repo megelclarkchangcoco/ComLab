@@ -1,0 +1,5 @@
+Flask
+gunicorn
+Werkzeug
+Pillow
+psycopg2-binary

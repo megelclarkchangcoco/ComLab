@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pending Accounts</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body { font-family: 'Segoe UI'; text-align:center; background:#edf1f7; padding:20px; }
+        table { width: 80%; margin:auto; border-collapse: collapse; background:white; border-radius:10px; overflow:hidden; box-shadow:0 4px 8px rgba(0,0,0,0.1);}
+        th, td { padding:10px; border-bottom:1px solid #ddd;}
+        th { background:#007bff; color:white;}
+        tr:hover { background:#f5f5f5;}
+        .action-btn { padding:6px 12px; font-weight:600; border:none; border-radius:6px; cursor:pointer;}
+        .approve { background:#28a745; color:white;}
+        .approve:hover { background:#1f8a37;}
+        .reject { background:#dc3545; color:white;}
+        .reject:hover { background:#a71d2a;}
+        .flash { width:80%; margin:10px auto; padding:10px; border-radius:6px; font-weight:600; color:white;}
+        .flash-success { background:#28a745;}
+    </style>
+</head>
+<body>
+    <h2><i class="fas fa-users-cog"></i> Pending Accounts</h2>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="flash flash-{{ category }}">{{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Name</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in pending %}
+            <tr>
+                <td>{{ user['id'] }}</td>
+                <td>{{ user['username'] }}</td>
+                <td>{{ user['name'] }}</td>
+                <td>{{ user['role'] }}</td>
+                <td>{{ user['status'] }}</td>
+                <td>
+                    <form method="POST" action="{{ url_for('approve_account', user_id=user['id']) }}" style="display:inline;">
+                        <button class="action-btn approve" type="submit"><i class="fas fa-check"></i> Approve</button>
+                    </form>
+                    <form method="POST" action="{{ url_for('reject_account', user_id=user['id']) }}" style="display:inline;">
+                        <button class="action-btn reject" type="submit"><i class="fas fa-times"></i> Reject</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

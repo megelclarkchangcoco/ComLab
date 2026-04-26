@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Account</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .create-account-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            width: 350px;
+            position: relative;
+        }
+
+        .create-account-container h2 {
+            text-align: center;
+            color: #333;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            box-sizing: border-box;
+        }
+
+        button {
+            background-color: #5cb85c;
+            color: white;
+            padding: 10px;
+            border: none;
+            width: 100%;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background-color: #4cae4c;
+        }
+
+        /* Back Button */
+        .back-btn {
+            background-color: #0275d8;
+            margin-bottom: 10px;
+        }
+        .back-btn:hover {
+            background-color: #025aa5;
+        }
+
+        /* Notification */
+        #notify {
+    display: none; /* hidden by default */
+    position: absolute;
+    top: -60px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #28a745; /* green for success */
+    color: white;
+    padding: 12px 20px;
+    border-radius: 6px;
+    min-width: 250px;
+    text-align: center;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    z-index: 1000;
+    justify-content: space-between;
+    align-items: center;
+}
+
+
+        #notify.error { background: #dc3545; }
+
+        #notify span#notify-close {
+            cursor: pointer;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+    </style>
+
+    <script>
+        function toggleFields() {
+            const role = document.getElementById('role').value;
+            const studentFields = document.getElementById('studentFields');
+            const professorFields = document.getElementById('professorFields');
+            const adminFields = document.getElementById('adminFields');
+
+            studentFields.style.display = 'none';
+            professorFields.style.display = 'none';
+            adminFields.style.display = 'none';
+
+            // Remove required from all
+            document.querySelectorAll(".student-required, .prof-required, .admin-required")
+                .forEach(e => e.required = false);
+
+            if (role === 'user') {
+                studentFields.style.display = 'block';
+                document.querySelectorAll(".student-required").forEach(e => e.required = true);
+            } else if (role === 'professor') {
+                professorFields.style.display = 'block';
+                document.querySelectorAll(".prof-required").forEach(e => e.required = true);
+            } else if (role === 'admin') {
+                adminFields.style.display = 'block';
+                document.querySelectorAll(".admin-required").forEach(e => e.required = true);
+            }
+        }
+
+        function showNotification(message="Created Successfully, Wait for the approval !", type="success", duration=60000) {
+            const notify = document.getElementById("notify");
+            const msg = document.getElementById("notify-message");
+            const closeBtn = document.getElementById("notify-close");
+
+            msg.textContent = message;
+            notify.className = type;
+            notify.style.display = "flex";
+
+            // Close button
+            closeBtn.onclick = () => { notify.style.display = "none"; }
+
+            // Auto-hide after duration
+            setTimeout(() => { notify.style.display = "none"; }, duration);
+        }
+
+        // AJAX form submission
+        document.addEventListener("DOMContentLoaded", () => {
+            const form = document.getElementById("registerForm");
+
+            form.addEventListener("submit", function(e) {
+                e.preventDefault(); // prevent page reload
+
+                const formData = new FormData(form);
+
+                fetch("/register", {
+                    method: "POST",
+                    body: formData
+                })
+                .then(res => res.json()) // expects JSON from server
+                .then(data => {
+                    if(data.success){
+                        showNotification("Created Successfully, Wait for the approval", "success", 60000);
+                        form.reset();
+                        toggleFields(); // hide role-specific fields
+                    } else if(data.error){
+                        showNotification(data.error, "error", 60000);
+                    }
+                })
+                .catch(err => {
+                    showNotification("Server error!", "error", 60000);
+                    console.error(err);
+                });
+            });
+        });
+    </script>
+</head>
+<body>
+
+    <div class="create-account-container">
+
+        <!-- Notification -->
+        <div id="notify">
+            <span id="notify-message"></span>
+            <span id="notify-close">&times;</span>
+        </div>
+
+        <h2>Create Account</h2>
+
+        <!-- Back to login button -->
+        <button class="back-btn" onclick="location.href='/login'">Back to Login</button>
+
+        <form id="registerForm" method="POST">
+
+            <label for="role">Role:</label>
+            <select id="role" name="role" onchange="toggleFields()" required>
+                <option value="">--Select Role--</option>
+                <option value="user">User (Student)</option>
+                <option value="professor">Professor</option>
+                <option value="admin">Admin</option>
+            </select>
+
+            <label for="name">Full Name:</label>
+            <input type="text" name="name" required>
+
+            <!-- STUDENT -->
+            <div id="studentFields" style="display:none;">
+                <label>Student Number:</label>
+                <input type="text" name="student_number" class="student-required">
+                <label>Grade:</label>
+                <input type="text" name="grade" class="student-required">
+                <label>Section:</label>
+                <input type="text" name="section" class="student-required">
+            </div>
+
+            <!-- PROFESSOR -->
+            <div id="professorFields" style="display:none;">
+                <label>Professor ID:</label>
+                <input type="text" name="professor_id" class="prof-required">
+            </div>
+
+            <!-- ADMIN -->
+            <div id="adminFields" style="display:none;">
+                <label>Username:</label>
+                <input type="text" name="username" class="admin-required">
+            </div>
+
+            <label for="password">Password:</label>
+            <input type="password" name="password" required>
+
+            <button type="submit">Create Account</button>
+
+        </form>
+
+    </div>
+
+</body>
+</html>

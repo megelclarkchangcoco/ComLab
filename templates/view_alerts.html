@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Peripheral Alerts - Computer Lab {{ comlab_id }}</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"/>
+
+<style>
+
+ @media print {
+    .print-hide {
+        display: none !important;  /* Hide everything with this class */
+    }
+
+    body {
+        background-color: #fff;    /* White background for printing */
+    }
+}
+:root {
+    --primary:#007bff;
+    --success:#28a745;
+    --danger:#dc3545;
+    --warning:#ffc107;
+    --gray:#6c757d;
+}
+
+body { font-family:'Segoe UI', sans-serif; background:#edf1f7; margin:0; padding:20px; }
+
+header {
+    display:flex; justify-content:space-between; align-items:center;
+    background:var(--primary); color:white; padding:18px 45px;
+    border-radius:16px; margin-bottom:25px;
+    box-shadow:0 6px 25px rgba(0,0,0,0.25);
+}
+header h2 { margin:0; font-size:24px; letter-spacing:0.5px; }
+
+.menu-buttons { display:flex; gap:12px; }
+.menu-buttons button {
+    background:white; color:var(--primary);
+    border:none; padding:10px 20px; border-radius:10px;
+    cursor:pointer; font-weight:600; transition:0.25s;
+    display:flex; align-items:center; gap:8px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.15);
+}
+.menu-buttons button:hover { background:#e7f1ff; transform:translateY(-2px); }
+
+.filters {
+    display:flex; flex-wrap:wrap; gap:15px; margin-bottom:20px;
+    align-items:center;
+}
+.filters input, .filters select {
+    padding:10px 12px; border-radius:8px; border:1px solid #ccc; font-size:14px;
+}
+
+/* Date filters styled as a box group */
+.date-box {
+    display:flex; align-items:center; gap:10px; background:white; border:1px solid #007bff; border-radius:8px; padding:6px 10px;
+    font-size:14px; font-weight:600;
+}
+
+table {
+    width:100%; border-collapse:collapse; background:white; border-radius:12px;
+    overflow:hidden; box-shadow:0 6px 20px rgba(0,0,0,0.12); transition:0.3s;
+}
+th, td { padding:12px; text-align:center; border-bottom:1px solid #ddd; }
+th { background:var(--primary); color:white; }
+tr:hover { background:#f1f1f1; transform:translateY(-1px); transition:0.2s; }
+
+.badge { padding:5px 12px; color:white; border-radius:6px; font-weight:600; font-size:12px; }
+.faulty { background: var(--danger); }
+.missing { background: var(--warning); }
+.replaced { background:#FFBF00; color:black; }
+
+</style>
+</head>
+<body>
+
+<header>
+    <h2><i class="fa-solid fa-triangle-exclamation"></i> Peripheral Alerts - Computer Lab {{ comlab_id }}</h2>
+    <div class="menu-buttons">
+        <button class ="print-hide" onclick="window.location.href='/comlab/{{ comlab_id }}/inventory'"><i class="fas fa-arrow-left"></i> Back</button>
+        <button class ="print-hide" onclick="location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
+        <button class="print-hide" onclick="openDeletedModal()">
+    <i class="fas fa-clock-rotate-left"></i> History
+</button>
+
+        <button class ="print-hide" onclick="window.print()"><i class="fas fa-print"></i> Print</button>
+    </div>
+</header>
+
+<div class="filters">
+    <input class ="print-hide" type="text" id="search-unique" placeholder="Search by Serial Number">
+    <input class ="print-hide" type="text" id="search-device-name" placeholder="Search by Device Name">
+    <input class ="print-hide" type="text" id="search-user-id" placeholder="Search by User ID">
+    <select class ="print-hide" id="filter-alert-type">
+        <option value="">All Alert Types</option>
+        <option value="faulty">Faulty</option>
+        <option value="missing">Missing</option>
+        <option value="replaced">Replaced</option>
+    </select>
+    <select class ="print-hide" id="filter-device-type">
+        <option value="">All Device Types</option>
+        {% set types = devices|map(attribute='device_type')|unique %}
+        {% for t in types %}
+            <option value="{{ t }}">{{ t }}</option>
+        {% endfor %}
+    </select>
+
+    <div class="date-box print-hide" >
+        <label>Start:</label>
+        <input type="date" id="filter-date-from">
+        <label>To:</label>
+        <input type="date" id="filter-date-to">
+    </div>
+        <button class ="print-hide" id="clear-filters" style="background:#dc3545; color:white; border:none; border-radius:8px; padding:8px 15px; font-weight:600; cursor:pointer;">
+        <i class="fas fa-times-circle"></i> Clear Filters
+    </button>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Serial Number</th>
+            <th>Unique ID</th>
+            <th>Alert Type</th>
+            <th>Device Name</th>
+            <th>Device Type</th>
+            <th>Event Type</th>
+            <th>User ID</th>
+            <th>Timestamp</th>
+            <th class ="print-hide">Action</th>
+        </tr>
+    </thead>
+    <tbody id="alert-table">
+        {% for d in devices %}
+<tr data-id="{{ d.id }}">
+            <td class="unique_id">{{ d.unique_id }}</td>
+            <td class="unique_id">{{ d.serial_number }}</td>
+            <td class="alert_type">
+                {% if d.alert_type=="faulty" %}<span class="badge faulty">Faulty</span>
+                {% elif d.alert_type=="missing" %}<span class="badge missing">Missing</span>
+                {% elif d.alert_type=="replaced" %}<span class="badge replaced">Replaced</span>
+                {% else %}<span class="badge">{{ d.alert_type }}</span>{% endif %}
+            </td>
+            <td class="device_name">{{ d.device_name }}</td>
+            <td class="device_type">{{ d.device_type }}</td>
+            <td>{{ d.event_type }}</td>
+            <td class="user_id">{{ d.user_id }}</td>
+            <td class="timestamp">{{ d.timestamp }}</td>
+             <td class ="print-hide">
+        <button class="delete-alert-btn" style="background:#28a745;color:white;border:none;padding:5px 8px;border-radius:6px;cursor:pointer;">
+            Marked as Cleared
+        </button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<!-- Deleted Alerts Modal -->
+<div id="deletedModal"
+     style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+            background:rgba(0,0,0,0.5); backdrop-filter:blur(3px);
+            justify-content:center; align-items:center; z-index:9999;">
+
+    <!-- Modal Content -->
+    <div style="position:relative; background:white; width:80%; max-width:900px;
+                padding:20px; border-radius:12px;
+                box-shadow:0 5px 25px rgba(0,0,0,0.25);">
+
+        <!-- Close button at top-right of modal content -->
+        <button onclick="closeDeletedModal()"
+                style="position:absolute; top:15px; right:15px;
+                       background:#dc3545; color:white; border:none;
+                       padding:8px 12px; border-radius:6px; cursor:pointer; font-weight:600;">
+            ✕
+        </button>
+
+        <!-- Modal Title -->
+        <h3 style="margin-top:0; margin-bottom:15px;">Deleted Alerts - Computer Lab {{ comlab_id }}</h3>
+
+<div class="filters" style="margin-bottom:15px;">
+    <input type="text" id="deleted-search-serial" placeholder="Search by Serial Number">
+    <input type="text" id="deleted-search-user" placeholder="Search by User ID">
+    <select id="deleted-filter-alert-type">
+        <option value="">All Alert Types</option>
+        <option value="faulty">Faulty</option>
+        <option value="missing">Missing</option>
+        <option value="replaced">Replaced</option>
+    </select>
+    <select id="deleted-filter-device-type">
+        <option value="">All Device Types</option>
+        {% set types = devices|map(attribute='device_type')|unique %}
+        {% for t in types %}
+            <option value="{{ t }}">{{ t }}</option>
+        {% endfor %}
+    </select>
+    <div class="date-box">
+        <label>Start:</label>
+        <input type="date" id="deleted-date-from">
+        <label>To:</label>
+        <input type="date" id="deleted-date-to">
+    </div>
+    <button id="deleted-clear-filters" style="background:#dc3545; color:white; border:none; border-radius:8px; padding:5px 10px; cursor:pointer;">
+        Clear Filters
+    </button>
+</div>
+
+        <table style="width:100%; border-collapse:collapse;">
+            <thead>
+                <tr>
+                    <th>Serial Number</th>
+                    <th>Unique ID</th>
+                    <th>Alert Type</th>
+                    <th>Device Name</th>
+                    <th>Device Type</th>
+                    <th>User ID</th>
+                    <th>Timestamp</th>
+                    <th>Action</th>
+
+                </tr>
+            </thead>
+            <tbody id="deleted-alerts-table"></tbody>
+        </table>
+    </div>
+</div>
+<script>
+    function applyDeletedFilters() {
+    const serial = document.getElementById("deleted-search-serial").value.toLowerCase();
+    const user = document.getElementById("deleted-search-user").value.toLowerCase();
+    const alertType = document.getElementById("deleted-filter-alert-type").value;
+    const deviceType = document.getElementById("deleted-filter-device-type").value;
+    const dateFrom = document.getElementById("deleted-date-from").value;
+    const dateTo = document.getElementById("deleted-date-to").value;
+
+    const rows = document.querySelectorAll("#deleted-alerts-table tr");
+    rows.forEach(row => {
+        let show = true;
+
+        const rowSerial = row.children[0].innerText.toLowerCase();
+        const rowAlert = row.children[2].innerText.toLowerCase();
+        const rowDevice = row.children[4].innerText;
+        const rowUser = row.children[5].innerText.toLowerCase();
+        const rowDate = row.children[6].innerText.split("T")[0];
+
+        if(serial && !rowSerial.includes(serial)) show = false;
+        if(user && !rowUser.includes(user)) show = false;
+        if(alertType && rowAlert != alertType) show = false;
+        if(deviceType && rowDevice != deviceType) show = false;
+        if(dateFrom && rowDate < dateFrom) show = false;
+        if(dateTo && rowDate > dateTo) show = false;
+
+        row.style.display = show ? "" : "none";
+    });
+}
+
+// Attach filters
+["deleted-search-serial", "deleted-search-user", "deleted-filter-alert-type", "deleted-filter-device-type", "deleted-date-from", "deleted-date-to"].forEach(id => {
+    document.getElementById(id).addEventListener("input", applyDeletedFilters);
+});
+
+// Clear filters button
+document.getElementById("deleted-clear-filters").addEventListener("click", () => {
+    document.getElementById("deleted-search-serial").value = "";
+    document.getElementById("deleted-search-user").value = "";
+    document.getElementById("deleted-filter-alert-type").value = "";
+    document.getElementById("deleted-filter-device-type").value = "";
+    document.getElementById("deleted-date-from").value = "";
+    document.getElementById("deleted-date-to").value = "";
+    applyDeletedFilters();
+});
+
+// OPEN MODAL
+function openDeletedModal() {
+    document.getElementById("deletedModal").style.display = "flex";
+    loadDeletedAlerts();
+}
+
+// CLOSE MODAL
+function closeDeletedModal() {
+    document.getElementById("deletedModal").style.display = "none";
+}
+
+// FETCH DELETED ALERTS
+function loadDeletedAlerts() {
+    fetch(`/deleted_alerts/{{ comlab_id }}`)
+    .then(res => res.json())
+    .then(data => {
+        const table = document.getElementById("deleted-alerts-table");
+        table.innerHTML = ""; // clear
+
+        if (data.length === 0) {
+            table.innerHTML = `<tr><td colspan="7" style="padding:10px;">No deleted alerts.</td></tr>`;
+            return;
+        }
+
+        data.forEach(d => {
+            table.innerHTML += `
+                <tr data-id="${d.id}">
+                    <td>${d.unique_id}</td>
+                    <td>${d.serial_number}</td>
+                    <td>${d.alert_type}</td>
+                    <td>${d.device_name}</td>
+                    <td>${d.device_type}</td>
+                    <td>${d.user_id}</td>
+                    <td>${d.timestamp}</td>
+                    <td>
+                        <button class="restore-alert-btn" style="background:#28a745;color:white;border:none;padding:5px 8px;border-radius:6px;cursor:pointer;">
+                            Restore
+                        </button>
+                    </td>
+                </tr>
+            `;
+        });
+
+        // Attach event listeners **after buttons are added**
+        document.querySelectorAll(".restore-alert-btn").forEach(btn => {
+            btn.addEventListener("click", e => {
+                const row = e.target.closest("tr");
+                const alertId = row.dataset.id;
+
+                if(confirm("Are you sure you want to restore this alert?")) {
+                    fetch(`/restore_alert/${alertId}`, { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                        if(data.success) {
+                            row.remove();  // remove from modal table
+                            alert("Alert restored successfully!");
+                        } else {
+                            alert("Failed to restore alert.");
+                        }
+                    })
+                    .catch(err => console.error(err));
+                }
+            });
+        });
+    });
+}
+
+</script>
+
+<script>
+// DELETE / MARK AS SETTLED
+document.querySelectorAll(".delete-alert-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+        const row = e.target.closest("tr");
+        const alertId = row.dataset.id;
+        if(confirm("Are you sure you want to mark this alert as settled?")) {
+            row.remove();
+            fetch(`/delete_alert/${alertId}`, { method: 'DELETE' })
+                .then(res => res.json())
+                .then(data => {
+                    if(!data.success) alert("Failed to mark alert as settled.");
+                })
+                .catch(err => console.error(err));
+        }
+    });
+});
+</script>
+<script>
+// FILTER FUNCTION
+function applyFilters() {
+    const uid = document.getElementById("search-unique").value.toLowerCase();
+    const devName = document.getElementById("search-device-name").value.toLowerCase();
+    const userId = document.getElementById("search-user-id").value.toLowerCase();
+    const alertType = document.getElementById("filter-alert-type").value;
+    const deviceType = document.getElementById("filter-device-type").value;
+    const dateFrom = document.getElementById("filter-date-from").value;
+    const dateTo = document.getElementById("filter-date-to").value;
+
+    const rows = document.querySelectorAll("#alert-table tr");
+    rows.forEach(row => {
+        let show = true;
+
+        const rowUID = row.querySelector(".unique_id").innerText.toLowerCase();
+        const rowDev = row.querySelector(".device_name").innerText.toLowerCase();
+        const rowUser = row.querySelector(".user_id").innerText.toLowerCase();
+        const rowAlert = row.querySelector(".alert_type span").innerText.toLowerCase();
+        const rowDeviceType = row.querySelector(".device_type").innerText;
+        const rowDate = row.querySelector(".timestamp").innerText.split("T")[0];
+
+        if(uid && !rowUID.includes(uid)) show = false;
+        if(devName && !rowDev.includes(devName)) show = false;
+        if(userId && !rowUser.includes(userId)) show = false;
+        if(alertType && rowAlert != alertType) show = false;
+        if(deviceType && rowDeviceType != deviceType) show = false;
+        if(dateFrom && rowDate < dateFrom) show = false;
+        if(dateTo && rowDate > dateTo) show = false;
+
+        row.style.display = show ? "" : "none";
+    });
+}
+document.getElementById("clear-filters").addEventListener("click", () => {
+    document.getElementById("search-unique").value = "";
+    document.getElementById("search-device-name").value = "";
+    document.getElementById("search-user-id").value = "";
+    document.getElementById("filter-alert-type").value = "";
+    document.getElementById("filter-device-type").value = "";
+    document.getElementById("filter-date-from").value = "";
+    document.getElementById("filter-date-to").value = "";
+    applyFilters(); // Reset table display
+});
+
+// LISTEN TO FILTER INPUTS
+document.querySelectorAll(".filters input, .filters select").forEach(el => {
+    el.addEventListener("input", applyFilters);
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Account Management</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+<style>
+    .btn-badge {
+        position: relative;
+        display: inline-block;
+    }
+
+    .btn-badge .badge {
+        position: absolute;
+        top: -6px;
+        right: -8px;
+        background: red;
+        color: white;
+        font-size: 12px;
+        font-weight: bold;
+        padding: 2px 6px;
+        border-radius: 50%;
+        display: none; /* hidden by default */
+    }
+
+    body { font-family:'Segoe UI',sans-serif; background:#eef2f7; margin:0; padding:0; }
+    header { background:#007bff;color:white;padding:20px 40px; display:flex; justify-content:space-between; align-items:center; }
+    header h2 { margin:0; }
+    .top-buttons button { margin-left:10px; padding:10px 18px; border:none; border-radius:8px; cursor:pointer; background:white; color:#007bff; font-weight:600; }
+    .top-buttons button:hover { background:#e7f1ff; }
+    /* Pending Modal Buttons Hover */
+    .action-btn {
+        padding: 6px 12px;
+        border: none;
+        border-radius: 6px;
+        color: white;
+        cursor: pointer;
+        transition: background 0.3s, transform 0.1s;
+    }
+
+    .action-btn:hover {
+        transform: translateY(-2px); /* small lift effect */
+        opacity: 0.9;
+    }
+
+    .approve:hover {
+        background: #218838; /* darker green */
+    }
+
+    .reject:hover {
+        background: #c82333; /* darker red */
+    }
+
+    /* Toggle */
+    .toggle-container { width:180px; background:#d9d9d9; margin:20px auto; padding:3px; border-radius:30px; position:relative; display:flex; justify-content:space-between; }
+    .toggle-btn { width:50%; padding:10px 0; border:none; background:none; cursor:pointer; font-weight:bold; z-index:2; }
+    .switch-slider { position:absolute; top:3px; width:50%; height:38px; background:#007bff; border-radius:30px; transition:.3s; left:3px; }
+
+    /* Tables */
+    table { width:95%; margin:20px auto; border-collapse:collapse; background:white; border-radius:12px; overflow:hidden; }
+    th, td { padding:12px; border-bottom:1px solid #e5e5e5; text-align:center; vertical-align:middle; }
+    th { background:#007bff; color:white; cursor:pointer; }
+    tr:hover { background:#f5f5f5; }
+    .delete-btn { background:#dc3545; padding:6px 12px; border:none; border-radius:6px; color:white; cursor:pointer; }
+    .toggle-pass { cursor:pointer; margin-left:8px; }
+
+    /* Filters */
+    .filter-box { width:95%; margin:10px auto; background:white; padding:15px; display:flex; gap:10px; border-radius:10px; box-shadow:0 3px 8px rgba(0,0,0,.1); align-items:center; flex-wrap:wrap; }
+    .filter-box input, .filter-box select { padding:8px; border-radius:6px; border:1px solid #ccc; min-width:140px; }
+    .date-pair { display:flex; gap:8px; align-items:center; background:#fafafa; padding:6px; border-radius:6px; border:1px solid #e0e0e0; }
+    .apply-btn, .clear-btn { padding:8px 12px; border-radius:6px; border:none; cursor:pointer; font-weight:600; }
+    .apply-btn { background:#007bff; color:white; }
+.apply-btn:hover {
+    background-color: #0056b3;
+    color: white;
+    cursor: pointer;
+}
+.clear-btn {
+    background-color: #dc3545; /* bootstrap danger red */
+    color: white;
+}
+.clear-btn:hover {
+    background-color: #b02a37; /* darker red */
+    color: white;
+    cursor: pointer;
+}
+
+    /* Modal */
+    .modal { display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,.4); }
+    .modal-content { background:white; width:90%; max-width:1000px; margin:5% auto; padding:20px; border-radius:10px; }
+    .close { float:right; cursor:pointer; font-size:24px; font-weight:bold; }
+    .action-btn { padding:6px 12px; border:none; border-radius:6px; color:white; }
+    .approve { background:#28a745; } .reject { background:#dc3545; }
+
+    /* small helpers */
+    .filter-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; width:100%; }
+    .filter-col { display:flex; gap:6px; align-items:center; }
+    @media (max-width:800px){
+        .filter-box { flex-direction:column; align-items:stretch; }
+    }
+</style>
+</head>
+<body>
+
+<header>
+    <h2><i class="fas fa-users-cog"></i> Account Management</h2>
+    <div class="top-buttons">
+        <button onclick="location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
+        <button id="pendingBtn" class="btn-badge">
+            <i class="fas fa-user-clock"></i> Pending Accounts
+            <span id="pendingCount" class="badge">0</span>
+        </button>
+
+        <button id="profileEditsBtn" class="btn-badge">
+            <i class="fas fa-user-edit"></i> Pending Profile Edits
+            <span id="profileEditsCount" class="badge">0</span>
+        </button>
+    </div>
+</header>
+
+<!-- Toggle -->
+<div class="toggle-container">
+    <div id="slider" class="switch-slider"></div>
+    <button class="toggle-btn" onclick="switchType('user')">Users</button>
+    <button class="toggle-btn" onclick="switchType('admin')">Admins</button>
+</div>
+
+<!-- Filters (Users) -->
+<div id="userFilters" class="filter-box">
+    <div class="filter-row" style="flex:1;">
+        <input id="uSearch" placeholder="Search (username or name)..." style="min-width:220px;">
+        <select id="uRole">
+            <option value="">ALL ROLES</option>
+            <option>STUDENT</option>
+            <option>PROFESSOR</option>
+        </select>
+        <select id="uGrade">
+            <option value="">ALL YEAR</option>
+            <!-- server-side template kept same -->
+            {% for year, suffix in [(1,'st'),(2,'nd'),(3,'rd'),(4,'th'),(5,'th')] %}
+                <option value="{{ year }}">{{ year }}{{ suffix }} Year</option>
+            {% endfor %}
+        </select>
+        <input id="uSection" placeholder="Section">
+        <div class="date-pair">
+            <label style="font-size:13px;margin-right:6px;">Date From</label>
+            <input id="uDateFrom" type="date">
+            <label style="font-size:13px;margin:0 6px;">—</label>
+            <label style="font-size:13px;margin-right:6px;">Date To</label>
+            <input id="uDateTo" type="date">
+        </div>
+    </div>
+
+    <div style="display:flex; gap:8px;">
+        <button class="apply-btn" onclick="applyUserFilters()">Apply</button>
+        <button class="clear-btn" onclick="clearUserFilters()">Clear</button>
+    </div>
+</div>
+
+<!-- Filters (Admins) -->
+<div id="adminFilters" class="filter-box" style="display:none;">
+    <div class="filter-row" style="flex:1;">
+        <input id="aSearch" placeholder="Search (username or name)..." style="min-width:220px;">
+        <div class="date-pair">
+            <label style="font-size:13px;margin-right:6px;">Date From</label>
+            <input id="aDateFrom" type="date">
+            <label style="font-size:13px;margin:0 6px;">—</label>
+            <label style="font-size:13px;margin-right:6px;">Date To</label>
+            <input id="aDateTo" type="date">
+        </div>
+    </div>
+
+    <div style="display:flex; gap:8px;">
+        <button class="apply-btn" onclick="applyAdminFilters()">Apply</button>
+        <button class="clear-btn" onclick="clearAdminFilters()">Clear</button>
+    </div>
+</div>
+
+<!-- Users Table -->
+<table id="userTable">
+<thead>
+<tr>
+    <th onclick="sortTable('userTable',0)">Username</th>
+    <th onclick="sortTable('userTable',1)">Name</th>
+    <th>Password</th>
+    <th>Grade</th>
+    <th>Section</th>
+    <th>Remarks</th>
+    <th>Created</th>
+    <th>Action</th>
+</tr>
+</thead>
+<tbody>
+{% for user in data if user.role != 'admin' %}
+<tr>
+    <td>{{ user.username }}</td>
+    <td>{{ user.name }}</td>
+    <td>
+        <span class="masked-password">********</span>
+        <span class="real-password" style="display:none;">{{ user.password[:15] }}</span>
+        <i class="fa fa-eye toggle-pass"></i>
+    </td>
+    <td>{{ user.grade or '-' }}</td>
+    <td>{{ user.section or '-' }}</td>
+    <td>{{ 'STUDENT' if user.role=='user' else user.role.upper() }}</td>
+    <td>{{ user.created_at or '-' }}</td>
+    <td>
+        <button class="delete-btn" data-user-id="{{ user.id }}" onclick="deleteUser(this)">Delete</button>
+    </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<!-- Admins Table -->
+<table id="adminTable" style="display:{{ 'table' if account_type=='admin' else 'none' }};">
+<thead>
+<tr>
+    <th onclick="sortTable('adminTable',0)">Username</th>
+    <th onclick="sortTable('adminTable',1)">Name</th>
+    <th>Password</th>
+    <th>Created</th>
+    <th>Action</th>
+</tr>
+</thead>
+<tbody>
+{% for admin in data %}
+<tr>
+    <td>{{ admin.username }}</td>
+    <td>{{ admin.name }}</td>
+    <td>
+        <span class="masked-password">********</span>
+        <span class="real-password" style="display:none;">{{ admin.password[:15] }}</span>
+        <i class="fa fa-eye toggle-pass"></i>
+    </td>
+    <td>{{ admin.created_at or '-' }}</td>
+    <td>
+        <button class="delete-btn" data-admin-id="{{ admin.id }}" onclick="deleteAdmin(this)">Delete</button>
+    </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<!-- Pending Modal -->
+<div id="pendingModal" class="modal">
+    <div class="modal-content">
+        <span class="close">&times;</span>
+        <h3>Pending Accounts</h3>
+
+        <div class="filter-box">
+            <div class="filter-row" style="flex:1;">
+                <input id="pSearch" placeholder="Search by name or username..." style="min-width:200px;">
+                <select id="pGrade">
+                    <option value="">Grade</option>
+                    {% for year, suffix in [(1,'st'),(2,'nd'),(3,'rd'),(4,'th'),(5,'th')] %}
+                        <option value="{{ year }}">{{ year }}{{ suffix }} Year</option>
+                    {% endfor %}
+                </select>
+                <select id="pRole"><option value="">ALL</option><option>STUDENT</option><option>PROFESSOR</option></select>
+                <input id="pSection" placeholder="Section" style="min-width:140px;">
+                <div class="date-pair">
+                    <label style="font-size:13px;margin-right:6px;">Date From</label>
+                    <input id="pDateFrom" type="date">
+                    <label style="font-size:13px;margin:0 6px;">—</label>
+                    <label style="font-size:13px;margin-right:6px;">Date To</label>
+                    <input id="pDateTo" type="date">
+                </div>
+            </div>
+
+            <div style="display:flex; gap:8px;">
+                <button class="apply-btn" onclick="applyPendingFilters()">Apply</button>
+                <button class="clear-btn" onclick="clearPendingFilters()">Clear</button>
+            </div>
+        </div>
+
+        <table id="pendingTable">
+            <thead>
+            <tr>
+                <th onclick="sortTable('pendingTable',1)">Username</th>
+                <th onclick="sortTable('pendingTable',2)">Name</th>
+                <th>Grade</th>
+                <th>Section</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th>Action</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for p in pending_accounts %}
+            <tr>
+                <td>{{ p.username }}</td>
+                <td>{{ p.name }}</td>
+                <td>{{ p.grade or '-' }}</td>
+                <td>{{ p.section or '-' }}</td>
+                <td>
+                {% if p.role == "user" %}
+                    STUDENT
+                {% elif p.role == "admin" %}
+                    ADMIN
+                {% else %}
+                    {{ p.role.upper() }}
+                {% endif %}
+                </td>
+                <td>{{ p.created_at or '-' }}</td>
+                <td>
+                    <form method="POST" action="/approve/{{ p.id }}" style="display:inline-block;">
+                        <button class="action-btn approve" type="submit">Approve</button>
+                    </form>
+                    <form method="POST" action="/reject/{{ p.id }}" style="display:inline-block;">
+                        <button class="action-btn reject" type="submit">Reject</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Profile Edits Pending Modal -->
+<div id="profileEditsModal" class="modal">
+    <div class="modal-content">
+        <span class="close" id="closeProfileEdits">&times;</span>
+        <h3>Pending Profile Edits</h3>
+
+        <div class="filter-box">
+            <div class="filter-row" style="flex:1;">
+                <input id="peSearch" placeholder="Search by name or username..." style="min-width:200px;">
+                <select id="peGrade">
+                    <option value="">ALL YEAR</option>
+                    {% for year, suffix in [(1,'st'),(2,'nd'),(3,'rd'),(4,'th'),(5,'th')] %}
+                        <option value="{{ year }}">{{ year }}{{ suffix }} Year</option>
+                    {% endfor %}
+                </select>
+                <input id="peSection" placeholder="Section" style="min-width:140px;">
+                <div class="date-pair">
+                    <label style="font-size:13px;margin-right:6px;">Date From</label>
+                    <input id="peDateFrom" type="date">
+                    <label style="font-size:13px;margin:0 6px;">—</label>
+                    <label style="font-size:13px;margin-right:6px;">Date To</label>
+                    <input id="peDateTo" type="date">
+                </div>
+            </div>
+
+            <div style="display:flex; gap:8px;">
+                <button class="apply-btn" onclick="applyProfileEditsFilters()">Apply</button>
+                <button class="clear-btn" onclick="clearProfileEditsFilters()">Clear</button>
+            </div>
+        </div>
+
+        <table id="profileEditsTable">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Full Name</th>
+                    <th>Grade</th>
+                    <th>Section</th>
+                    <th>Email</th>
+                    <th>Contact</th>
+                    <th>Submitted At</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Data populated via JS fetch -->
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    // Global storage for fetched profile edits & pending accounts (so filters can re-apply client-side)
+    let profileEditsData = [];
+    let pendingAccountsData = [];
+
+    // UI elements
+    const profileEditsBtn = document.getElementById("profileEditsBtn");
+    const profileEditsModal = document.getElementById("profileEditsModal");
+    const closeProfileEdits = document.getElementById("closeProfileEdits");
+    const profileEditsTableBody = document.querySelector("#profileEditsTable tbody");
+
+    const pendingModal = document.getElementById("pendingModal");
+    const pendingTableBody = document.querySelector("#pendingTable tbody");
+
+    // Open modals
+    profileEditsBtn.addEventListener("click", () => {
+        profileEditsModal.style.display = "block";
+        loadProfileEditsPending();
+    });
+
+    // Close modals
+    closeProfileEdits.addEventListener("click", () => profileEditsModal.style.display = "none");
+    document.querySelector(".close")?.addEventListener("click", () => pendingModal.style.display = "none");
+
+    // Fetch pending profile edits
+    function loadProfileEditsPending(){
+        fetch("/api/profile_edits_pending")
+        .then(res => res.json())
+        .then(data => {
+            profileEditsData = data;
+            renderProfileEditsTable(profileEditsData);
+        })
+        .catch(err => {
+            console.error(err);
+            profileEditsData = [];
+            renderProfileEditsTable(profileEditsData);
+        });
+    }
+
+    function renderProfileEditsTable(data){
+        profileEditsTableBody.innerHTML = "";
+        data.forEach(edit => {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td>${edit.username}</td>
+                <td>${edit.full_name}</td>
+                <td>${edit.grade || '-'}</td>
+                <td>${edit.section || '-'}</td>
+                <td>${edit.email || '-'}</td>
+                <td>${edit.contact || '-'}</td>
+                <td>${edit.submitted_at || '-'}</td>
+                <td>
+                    <form method="POST" action="/approve_edit/${edit.id}" style="display:inline-block;">
+                        <button class="action-btn approve" type="submit">Approve</button>
+                    </form>
+                    <form method="POST" action="/reject_edit/${edit.id}" style="display:inline-block;">
+                        <button class="action-btn reject" type="submit">Reject</button>
+                    </form>
+                </td>
+            `;
+            profileEditsTableBody.appendChild(row);
+        });
+    }
+
+    // Fetch pending accounts
+    function loadPendingAccounts(){
+        fetch("/pending_accounts")
+        .then(res => res.json())
+        .then(data => {
+            pendingAccountsData = data;
+            renderPendingTable(pendingAccountsData);
+        })
+        .catch(err => {
+            console.error(err);
+            pendingAccountsData = [];
+            renderPendingTable(pendingAccountsData);
+        });
+    }
+
+    function renderPendingTable(data){
+        pendingTableBody.innerHTML = "";
+        data.forEach(p => {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td>${p.username}</td>
+                <td>${p.name}</td>
+                <td>${p.grade || '-'}</td>
+                <td>${p.section || '-'}</td>
+                <td>${
+                    p.role.toLowerCase() === "user" ? "STUDENT" :
+                    p.role.toLowerCase() === "admin" ? "ADMIN" : p.role.toUpperCase()
+                }</td>
+                <td>${p.created_at || '-'}</td>
+                <td>
+                    <form method="POST" action="/approve/${p.id}" style="display:inline-block;">
+                        <button class="action-btn approve" type="submit">Approve</button>
+                    </form>
+                    <form method="POST" action="/reject/${p.id}" style="display:inline-block;">
+                        <button class="action-btn reject" type="submit">Reject</button>
+                    </form>
+                </td>
+            `;
+            pendingTableBody.appendChild(row);
+        });
+    }
+
+    // Helper: parse date string to Date object; returns null if invalid or '-'
+    function parseDateOrNull(str){
+        if(!str) return null;
+        // Trim and handle placeholder '-'
+        str = str.trim();
+        if(str === '-' || str === '') return null;
+        // Try native Date parse for formats like YYYY-MM-DD; fallback to Date
+        const d = new Date(str);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    // Generic row created date getter (expects date in one cell)
+    function getRowCreatedDate(row, cellIndex){
+        const txt = row.cells[cellIndex].innerText.trim();
+        return parseDateOrNull(txt);
+    }
+
+    // ------------------ Validation rules for date pair ------------------
+    // returns {ok: true} or {ok:false, message: '...'}
+    function validateDatePair(fromVal, toVal){
+        if(toVal && !fromVal){
+            return { ok:false, message: "Date From is required when Date To has a value." };
+        }
+        if(fromVal){
+            const dFrom = new Date(fromVal);
+            if(isNaN(dFrom.getTime())) return { ok:false, message: "Invalid Date From." };
+            if(toVal){
+                const dTo = new Date(toVal);
+                if(isNaN(dTo.getTime())) return { ok:false, message: "Invalid Date To." };
+                if(dFrom.getTime() > dTo.getTime()) return { ok:false, message: "Date From cannot be after Date To." };
+            }
+        }
+        return { ok:true };
+    }
+
+    // ------------------ USERS Filtering ------------------
+    function applyUserFilters(){
+        const search = (document.getElementById("uSearch").value || "").toLowerCase().trim();
+        const role = (document.getElementById("uRole").value || "").toLowerCase();
+        const grade = (document.getElementById("uGrade").value || "").trim();
+        const section = (document.getElementById("uSection").value || "").toLowerCase().trim();
+        const dateFrom = document.getElementById("uDateFrom").value;
+        const dateTo = document.getElementById("uDateTo").value;
+
+        const valid = validateDatePair(dateFrom, dateTo);
+        if(!valid.ok){ alert(valid.message); return; }
+
+        const table = document.getElementById("userTable");
+        const rows = Array.from(table.tBodies[0].rows);
+
+        rows.forEach(row => {
+            // base search (username or name)
+            const username = row.cells[0].innerText.toLowerCase();
+            const name = row.cells[1].innerText.toLowerCase();
+            let visible = true;
+
+            if(search){
+                visible = username.includes(search) || name.includes(search);
+            }
+
+            // role filter (remarks column)
+            if(visible && role){
+                const roleCell = row.cells[5].innerText.toLowerCase();
+                if(!roleCell.includes(role)) visible = false;
+            }
+
+            // grade filter (grade column index 3)
+            if(visible && grade){
+    const g = row.cells[3].innerText.trim(); // e.g., "1st Year"
+    const gNum = parseInt(g);                 // extract number
+    if(gNum !== parseInt(grade)) visible = false;
+}
+
+
+            // section filter (index 4)
+            if(visible && section){
+                const s = row.cells[4].innerText.toLowerCase();
+                if(s !== section) visible = false;
+            }
+
+            // date pair filter (created column index 6)
+            if(visible && (dateFrom || dateTo)){
+                const created = getRowCreatedDate(row, 6);
+                if(!created){
+                    // treat missing created as not matching a date filter that has dateFrom
+                    visible = false;
+                } else {
+                    const fromD = dateFrom ? new Date(dateFrom) : null;
+                    const toD = dateTo ? new Date(dateTo) : null;
+                    if(fromD && created.getTime() < fromD.getTime()) visible = false;
+                    if(toD && created.getTime() > toD.getTime()) visible = false;
+                }
+            }
+
+            row.style.display = visible ? "" : "none";
+        });
+    }
+
+    function clearUserFilters(){
+        document.getElementById("uSearch").value = "";
+        document.getElementById("uRole").value = "";
+        document.getElementById("uGrade").value = "";
+        document.getElementById("uSection").value = "";
+        document.getElementById("uDateFrom").value = "";
+        document.getElementById("uDateTo").value = "";
+
+        // show all rows
+        Array.from(document.getElementById("userTable").tBodies[0].rows).forEach(r => r.style.display = "");
+    }
+
+    // ------------------ ADMINS Filtering ------------------
+    function applyAdminFilters(){
+        const search = (document.getElementById("aSearch").value || "").toLowerCase().trim();
+        const dateFrom = document.getElementById("aDateFrom").value;
+        const dateTo = document.getElementById("aDateTo").value;
+
+        const valid = validateDatePair(dateFrom, dateTo);
+        if(!valid.ok){ alert(valid.message); return; }
+
+        const table = document.getElementById("adminTable");
+        const rows = Array.from(table.tBodies[0].rows);
+
+        rows.forEach(row => {
+            const username = row.cells[0].innerText.toLowerCase();
+            const name = row.cells[1].innerText.toLowerCase();
+            let visible = true;
+
+            if(search) visible = username.includes(search) || name.includes(search);
+
+            if(visible && (dateFrom || dateTo)){
+                const created = getRowCreatedDate(row, 3);
+                if(!created) visible = false;
+                else {
+                    const fromD = dateFrom ? new Date(dateFrom) : null;
+                    const toD = dateTo ? new Date(dateTo) : null;
+                    if(fromD && created.getTime() < fromD.getTime()) visible = false;
+                    if(toD && created.getTime() > toD.getTime()) visible = false;
+                }
+            }
+
+            row.style.display = visible ? "" : "none";
+        });
+    }
+
+    function clearAdminFilters(){
+        document.getElementById("aSearch").value = "";
+        document.getElementById("aDateFrom").value = "";
+        document.getElementById("aDateTo").value = "";
+
+        Array.from(document.getElementById("adminTable").tBodies[0].rows).forEach(r => r.style.display = "");
+    }
+
+    // ------------------ PENDING Filtering ------------------
+    function applyPendingFilters(){
+        const search = (document.getElementById("pSearch").value || "").toLowerCase().trim();
+        const grade = (document.getElementById("pGrade").value || "").trim();
+        const role = (document.getElementById("pRole").value || "").toLowerCase();
+        const section = (document.getElementById("pSection").value || "").toLowerCase().trim();
+        const dateFrom = document.getElementById("pDateFrom").value;
+        const dateTo = document.getElementById("pDateTo").value;
+
+        const valid = validateDatePair(dateFrom, dateTo);
+        if(!valid.ok){ alert(valid.message); return; }
+
+        // Work on the displayed table rows (assumes rendered)
+        const table = document.getElementById("pendingTable");
+        const rows = Array.from(table.tBodies[0].rows);
+
+        rows.forEach(row => {
+            const username = row.cells[0].innerText.toLowerCase();
+            const name = row.cells[1].innerText.toLowerCase();
+            let visible = true;
+
+            if(search) visible = username.includes(search) || name.includes(search);
+
+            if(visible && grade){
+    const g = row.cells[2].innerText.trim(); // e.g., "1st Year"
+    const gNum = parseInt(g);                 // extract number
+    if(gNum !== parseInt(grade)) visible = false;
+}
+
+
+            if(visible && role){
+                const r = row.cells[4].innerText.toLowerCase();
+                if(!r.includes(role)) visible = false;
+            }
+
+            if(visible && section){
+                const s = row.cells[3].innerText.toLowerCase();
+                if(s !== section) visible = false;
+            }
+
+            if(visible && (dateFrom || dateTo)){
+                const created = getRowCreatedDate(row, 5);
+                if(!created) visible = false;
+                else {
+                    const fromD = dateFrom ? new Date(dateFrom) : null;
+                    const toD = dateTo ? new Date(dateTo) : null;
+                    if(fromD && created.getTime() < fromD.getTime()) visible = false;
+                    if(toD && created.getTime() > toD.getTime()) visible = false;
+                }
+            }
+
+            row.style.display = visible ? "" : "none";
+        });
+    }
+
+    function clearPendingFilters(){
+        document.getElementById("pSearch").value = "";
+        document.getElementById("pGrade").value = "";
+        document.getElementById("pRole").value = "";
+        document.getElementById("pSection").value = "";
+        document.getElementById("pDateFrom").value = "";
+        document.getElementById("pDateTo").value = "";
+
+        // Re-render the pending table from the stored data to restore full list
+        renderPendingTable(pendingAccountsData);
+    }
+
+    // ------------------ PROFILE EDITS Filtering ------------------
+    function applyProfileEditsFilters(){
+        const search = (document.getElementById("peSearch").value || "").toLowerCase().trim();
+        const grade = (document.getElementById("peGrade").value || "").trim();
+        const section = (document.getElementById("peSection").value || "").toLowerCase().trim();
+        const dateFrom = document.getElementById("peDateFrom").value;
+        const dateTo = document.getElementById("peDateTo").value;
+
+        const valid = validateDatePair(dateFrom, dateTo);
+        if(!valid.ok){ alert(valid.message); return; }
+
+        // Filter the stored profileEditsData and re-render
+        const filtered = profileEditsData.filter(edit => {
+            let ok = true;
+
+            if(search){
+                const uname = (edit.username || "").toLowerCase();
+                const fullname = (edit.full_name || "").toLowerCase();
+                ok = uname.includes(search) || fullname.includes(search);
+            }
+            if(ok && grade){
+    const gNum = parseInt(edit.grade) || 0;
+    ok = gNum === parseInt(grade);
+}
+
+            if(ok && section){
+                ok = (edit.section || '').toLowerCase() === section;
+            }
+            if(ok && (dateFrom || dateTo)){
+                const submitted = parseDateOrNull(edit.submitted_at || '');
+                if(!submitted) ok = false;
+                else {
+                    const fromD = dateFrom ? new Date(dateFrom) : null;
+                    const toD = dateTo ? new Date(dateTo) : null;
+                    if(fromD && submitted.getTime() < fromD.getTime()) ok = false;
+                    if(toD && submitted.getTime() > toD.getTime()) ok = false;
+                }
+            }
+            return ok;
+        });
+
+        renderProfileEditsTable(filtered);
+    }
+
+    function clearProfileEditsFilters(){
+        document.getElementById("peSearch").value = "";
+        document.getElementById("peGrade").value = "";
+        document.getElementById("peSection").value = "";
+        document.getElementById("peDateFrom").value = "";
+        document.getElementById("peDateTo").value = "";
+
+        renderProfileEditsTable(profileEditsData);
+    }
+
+    // ------------------ Sorting helper ------------------
+    function sortTable(tableId,col){
+        let table=document.getElementById(tableId);
+        if(!table) return;
+        let rows=Array.from(table.tBodies[0].rows);
+        let asc=table.getAttribute("data-sort-"+col)!=="asc";
+        rows.sort((a,b)=>{
+            let x=a.cells[col].innerText.toLowerCase();
+            let y=b.cells[col].innerText.toLowerCase();
+            // try numeric fallback
+            const nx = parseFloat(x);
+            const ny = parseFloat(y);
+            if(!isNaN(nx) && !isNaN(ny)){
+                return asc ? nx - ny : ny - nx;
+            }
+            return asc? x.localeCompare(y) : y.localeCompare(x);
+        });
+        rows.forEach(r=>table.tBodies[0].appendChild(r));
+        table.setAttribute("data-sort-"+col,asc?"asc":"desc");
+    }
+
+    // ------------------ Event wiring ------------------
+    function attachEventListeners(){
+        document.querySelectorAll(".toggle-pass").forEach(btn => {
+            btn.addEventListener("click", function(){
+                const masked = this.parentElement.querySelector(".masked-password");
+                const real = this.parentElement.querySelector(".real-password");
+                if(real.style.display==="none"){
+                    real.style.display="inline"; masked.style.display="none";
+                    this.classList.replace("fa-eye","fa-eye-slash");
+                } else {
+                    real.style.display="none"; masked.style.display="inline";
+                    this.classList.replace("fa-eye-slash","fa-eye");
+                }
+            });
+        });
+
+        document.getElementById("pendingBtn")?.addEventListener("click", () => {
+            pendingModal.style.display = "block";
+            loadPendingAccounts();
+        });
+
+        // close buttons
+        document.querySelectorAll(".close").forEach(el => {
+            el.addEventListener("click", () => {
+                el.closest(".modal").style.display = "none";
+            });
+        });
+
+        // click outside modal to close
+        window.addEventListener("click", (e) => {
+            document.querySelectorAll(".modal").forEach(mod => {
+                if(e.target === mod) mod.style.display = "none";
+            });
+        });
+    }
+
+    attachEventListeners();
+
+    // ------------------ Pending counts update (badges) ------------------
+    function updatePendingCounts() {
+        // Pending Accounts
+        fetch("/pending_accounts/count")
+            .then(res => res.json())
+            .then(data => {
+                const badge = document.getElementById("pendingCount");
+                badge.innerText = data.count;
+                badge.style.display = data.count > 0 ? "inline-block" : "none";
+            }).catch(()=>{});
+
+        // Pending Profile Edits
+        fetch("/api/profile_edits_pending/count")
+            .then(res => res.json())
+            .then(data => {
+                const badge = document.getElementById("profileEditsCount");
+                badge.innerText = data.count;
+                badge.style.display = data.count > 0 ? "inline-block" : "none";
+            }).catch(()=>{});
+    }
+
+    // Initial load
+    updatePendingCounts();
+
+    // Optionally, refresh every 10 seconds
+    setInterval(updatePendingCounts, 10000);
+
+    // ------------------ Delete helpers ------------------
+    function deleteUser(button) {
+        const userId = button.dataset.userId;
+        fetch(`/delete/user/${userId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => {
+            if (response.ok) {
+                const row = button.parentNode.parentNode;
+                row.parentNode.removeChild(row);
+            } else {
+                alert('Failed to delete user.');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred.');
+        });
+    }
+
+    function deleteAdmin(button) {
+        const adminId = button.dataset.adminId;
+        fetch(`/delete/admin/${adminId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => {
+            if (response.ok) {
+                const row = button.parentNode.parentNode;
+                row.parentNode.removeChild(row);
+            } else {
+                alert('Failed to delete admin.');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred.');
+        });
+    }
+
+    // ------------------ Switch toggle ------------------
+    const userTable = document.getElementById("userTable");
+    const adminTable = document.getElementById("adminTable");
+    const userFilters = document.getElementById("userFilters");
+    const adminFilters = document.getElementById("adminFilters");
+    const slider = document.getElementById("slider");
+
+    function switchType(type){
+        const url = new URL(window.location.href);
+        url.searchParams.set('type', type);
+        window.history.pushState({}, '', url);
+
+        if(type === "user"){
+            slider.style.left = "3px";
+            userTable.style.display = "table";
+            adminTable.style.display = "none";
+            userFilters.style.display = "flex";
+            adminFilters.style.display = "none";
+        } else {
+            slider.style.left = "90px";
+            userTable.style.display = "none";
+            adminTable.style.display = "table";
+            userFilters.style.display = "none";
+            adminFilters.style.display = "flex";
+
+            fetch(url)
+                .then(res => res.text())
+                .then(html => {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, "text/html");
+                    const newAdminTbody = doc.querySelector("#adminTable tbody");
+                    if(newAdminTbody){
+                        adminTable.querySelector("tbody").innerHTML = newAdminTbody.innerHTML;
+                    }
+                    attachEventListeners();
+                })
+                .catch(err => console.error(err));
+        }
+    }
+</script>
+
+</body>
+</html>

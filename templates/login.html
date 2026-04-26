@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .login-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            width: 300px;
+            text-align: center;
+            position: relative;
+        }
+
+        .login-container h2 {
+            color: #333;
+        }
+
+        .login-container label {
+            display: block;
+            margin-bottom: 5px;
+            text-align: left;
+        }
+
+        .login-container input[type="text"],
+        .login-container input[type="password"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        .login-container button {
+            background-color: #5cb85c;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        .login-container button:hover {
+            background-color: #4cae4c;
+        }
+
+        .login-container a {
+            display: block;
+            margin-top: 10px;
+            color: #5cb85c;
+            text-decoration: none;
+        }
+
+        .login-container a:hover {
+            text-decoration: underline;
+        }
+
+        /* Notification box */
+        #notify {
+            display: none; /* hidden by default */
+            position: absolute;
+            top: -70px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 6px;
+            min-width: 250px;
+            text-align: center;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            z-index: 1000;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #notify span {
+            cursor: pointer;
+            margin-left: 10px;
+            font-weight: bold;
+        }
+
+        #notify.success {
+            background-color: #28a745; /* green for success */
+        }
+
+        #notify.error {
+            background-color: #dc3545; /* red for error */
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+
+        <!-- Notification box -->
+        <div id="notify">
+            <div id="notify-message"></div>
+            <span id="notify-close">&times;</span>
+        </div>
+
+        <h2>LOGIN PAGE</h2>
+        <form action="/login" method="POST">
+            <input
+                type="hidden"
+                name="pc_tag"
+                value="{{ pc_tag or request.args.get('pc_tag', '') }}"
+            >
+
+            {% if pc_tag %}
+            <div style="background:#eef6ff; border:1px solid #b6dcff; color:#075985; padding:8px 10px; border-radius:6px; font-size:13px; font-weight:bold; margin-bottom:15px; text-align:left;">
+                PC Unit: <span style="color:#0f172a;">{{ pc_tag }}</span>
+            </div>
+            {% endif %}
+
+            <label for="username">Username:</label>
+            <input type="text" id="username" name="username" required><br>
+
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required><br>
+
+            <button type="submit">Login</button>
+            <a href="/register">Create Account</a>
+        </form>
+    </div>
+
+    <script>
+        const notify = document.getElementById("notify");
+        const notifyMessage = document.getElementById("notify-message");
+        const closeBtn = document.getElementById("notify-close");
+
+        // Close button
+        closeBtn.onclick = () => {
+            notify.style.display = "none";
+        };
+
+        // Show notification
+        function showNotification(message, type="error") {
+            if (!message) return;
+            notifyMessage.textContent = message;
+            notify.className = type; // set class to 'success' or 'error'
+            notify.style.display = "flex";
+        }
+
+        // Display Flask flash messages
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              showNotification({{ message|tojson }}, {{ category|tojson }});
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+    </script>
+</body>
+</html>

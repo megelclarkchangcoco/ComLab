@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>System Summary Dashboard</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+
+<style>
+body { margin:0; font-family:'Segoe UI',sans-serif; background:#eef2f7; }
+.header-bar { background:#007bff; color:white; padding:15px 30px; display:flex; justify-content:space-between; align-items:center; box-shadow:0 4px 10px rgba(0,0,0,0.2);}
+.header-bar h1 { margin:0; font-size:22px; font-weight:600;}
+.button-group { display:flex; gap:10px;}
+.btn-menu { background:white; color:#007bff; padding:8px 15px; border-radius:8px; font-weight:600; border:none; cursor:pointer; transition:.25s;}
+.btn-menu:hover { background:#e7f1ff; transform:translateY(-2px);}
+.filter-form { margin:15px 30px; padding:15px; background:white; border-radius:10px; box-shadow:0 4px 15px rgba(0,0,0,0.1); display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:center;}
+.filter-form label { font-weight:600; margin-right:5px;}
+.filter-form input, .filter-form select { padding:6px 10px; border-radius:5px; border:1px solid #007bff;}
+.filter-form button { background:#007bff; color:white; border:none; padding:8px 15px; border-radius:6px; cursor:pointer; font-weight:600; transition:.25s;}
+.filter-form button:hover { background:#0056b3;}
+.summary-boxes { display:flex; justify-content:center; gap:15px; flex-wrap:wrap; margin:15px 0;}
+.box { background:white; width:180px; height:140px; border-radius:10px; box-shadow:0 4px 15px rgba(0,0,0,0.1); display:flex; flex-direction:column; align-items:center; justify-content:center; transition:transform .3s, box-shadow .3s;}
+.box:hover { transform:translateY(-3px); box-shadow:0 8px 20px rgba(0,0,0,0.2);}
+.box i { color:#007bff; margin-bottom:8px;}
+.box h2 { margin:0; font-size:22px; color:#333;}
+.box p { margin:3px 0 0 0; font-weight:600; color:#555;}
+.summary-container { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:20px; padding:20px 30px;}
+.card, .alert-chart-card { background:white; padding:20px; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,0.1);}
+.card h3, .alert-chart-card h3 { margin-top:0; font-size:18px; font-weight:600; color:#007bff;}
+.chart-wrapper { width:100%; height:250px; position:relative;}
+@media print {
+    @page { size:landscape; margin:10mm;}
+    .header-bar, .filter-form, .btn-menu { display:none !important;}
+    .summary-boxes, .summary-container { display:flex !important; flex-wrap:wrap; justify-content:space-around; width:100%;}
+    .summary-boxes .box, .summary-container .card, .alert-chart-card { margin:8px; page-break-inside:avoid;}
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header-bar">
+    <h1><i class="fas fa-chart-pie"></i> Reports Summary - Computer Lab {{ comlab_id }}</h1>
+    <div class="button-group">
+        <button class="btn-menu" onclick="window.location.href='/comlab/{{ comlab_id }}/inventory'"><i class="fas fa-arrow-left"></i> Back</button>
+        <button class="btn-menu" onclick="window.location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
+        <button class="btn-menu" onclick="window.print()"><i class="fas fa-print"></i> Print</button>
+    </div>
+</div>
+
+<!-- FILTER FORM -->
+<div class="filter-form">
+    <form method="GET">
+        <label>Start Date:</label>
+        <input type="date" name="start_date" value="{{ request.args.get('start_date','') }}">
+        <label>End Date:</label>
+        <input type="date" name="end_date" value="{{ request.args.get('end_date','') }}">
+        <label>Peripheral Type:</label>
+        <select name="peripheral_type">
+            <option value="">All</option>
+            {% for t in ['Mouse','Keyboard','Monitor','Speaker','Webcam','FlashDrive','Hard Disk','Scanner','Printer'] %}
+            <option value="{{ t }}" {% if request.args.get('peripheral_type')==t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+        </select>
+        <label>Alert Type:</label>
+        <select name="alert_type">
+            <option value="">All</option>
+            <option value="Missing" {% if request.args.get('alert_type')=='Missing' %}selected{% endif %}>Missing</option>
+            <option value="Faulty" {% if request.args.get('alert_type')=='Faulty' %}selected{% endif %}>Faulty</option>
+            <option value="Replaced" {% if request.args.get('alert_type')=='Replaced' %}selected{% endif %}>Replacement</option>
+        </select>
+        <label>PC Number:</label>
+        <input type="text" name="pc_no" placeholder="PC No.1" value="{{ request.args.get('pc_no','') }}">
+        <button type="submit"><i class="fa fa-check-circle"></i> Apply Filter</button>
+        <button type="button" onclick="window.location.href=window.location.pathname"><i class="fa fa-times-circle"></i> Clear Filter</button>
+    </form>
+</div>
+
+<!-- SUMMARY BOXES -->
+<div class="summary-boxes">
+    <div class="box">
+        <i class="fas fa-desktop fa-2x"></i>
+        <h2>{{ pc_count }}</h2>
+        <p>PCs</p>
+    </div>
+    <div class="box">
+        <i class="fas fa-keyboard fa-2x"></i>
+        <h2>{{ peripheral_counts | sum }}</h2>
+        <p>Peripherals</p>
+    </div>
+    <div class="box">
+        <i class="fas fa-triangle-exclamation fa-2x"></i>
+        <h2>{{ anomaly_count }}</h2>
+        <p>Anomalies</p>
+    </div>
+    <div class="box">
+        <i class="fas fa-bell fa-2x"></i>
+        <h2>{{ alert_count }}</h2>
+        <p>Active Alerts</p>
+    </div>
+</div>
+
+<!-- CHARTS -->
+<div class="summary-container">
+    <div class="card">
+        <h3><i class="fas fa-desktop"></i> Number of PCs</h3>
+        <canvas id="pcChart"></canvas>
+    </div>
+    <div class="card">
+        <h3><i class="fas fa-keyboard"></i> Peripherals Count</h3>
+        <canvas id="peripheralChart"></canvas>
+    </div>
+    <div class="card">
+        <h3><i class="fas fa-triangle-exclamation"></i> Anomalies</h3>
+        <canvas id="anomalyChart"></canvas>
+    </div>
+    <div class="alert-chart-card">
+        <h3><i class="fas fa-chart-pie"></i> Alerts Summary</h3>
+        <canvas id="alertPieChart"></canvas>
+    </div>
+</div>
+
+<script>
+const pcCount = {{ pc_count }};
+const peripheralCounts = {{ peripheral_counts }};
+const peripheralLabels = {{ types | tojson }};
+const anomalyCount = {{ anomaly_count }};
+const alertCounts = {{ alert_counts | tojson }};
+
+// PC Doughnut Chart
+new Chart(document.getElementById('pcChart'), {
+    type: 'doughnut',
+    data: { labels: ['PCs'], datasets: [{ data: [pcCount], backgroundColor: ['#007bff'] }] },
+    options: { plugins: { legend: { display: false } } }
+});
+
+// Peripherals Bar Chart
+new Chart(document.getElementById('peripheralChart'), {
+    type: 'bar',
+    data: { labels: peripheralLabels, datasets: [{ data: peripheralCounts, backgroundColor:'#17a2b8' }] },
+    options: { scales: { y: { beginAtZero:true } }, plugins:{ legend:{ display:false } } }
+});
+
+// Anomalies Line Chart
+new Chart(document.getElementById('anomalyChart'), {
+    type: 'line',
+    data: { labels:['Anomalies'], datasets:[{ data:[anomalyCount], borderColor:'#dc3545', backgroundColor:'#dc3545' }]},
+    options: { plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+});
+
+// Alerts Pie Chart
+new Chart(document.getElementById('alertPieChart'), {
+    type: 'pie',
+    data: {
+        labels: ['Missing', 'Faulty', 'Replacement'],
+        datasets: [{
+            data: [
+                alertCounts.missing,
+                alertCounts.faulty,
+                alertCounts.replaced
+            ],
+            backgroundColor: ['#ff6384', '#ffcd56', '#36a2eb']
+        }]
+    },
+    options: {
+        plugins: {
+            legend: {
+                position: 'bottom',
+                labels: {
+                    font: {
+                        size: 13,
+                        weight: 'bold'
+                    },
+                    generateLabels: function(chart) {
+                        const data = chart.data;
+                        return data.labels.map((label, i) => {
+                            const value = data.datasets[0].data[i];
+                            const bgColor = data.datasets[0].backgroundColor[i];
+
+                            return {
+                                text: `${label} – ${value}`,
+                                fillStyle: bgColor,
+                                strokeStyle: bgColor,
+                                lineWidth: 1,
+                                hidden: value === 0 ? false : false,
+                                index: i
+                            };
+                        });
+                    }
+                }
+            },
+            tooltip: {
+                enabled: true,
+                callbacks: {
+                    label: function(context) {
+                        return `${context.label}: ${context.raw}`;
+                    }
+                }
+            },
+            datalabels: {
+                display: false
+            }
+        }
+    }
+});
+</script>
+
+</body>
+</html>

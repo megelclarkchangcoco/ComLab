@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Peripheral Dashboard – {{ lab_name }}</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"/>
+<style>
+:root {
+    --primary: #007bff;
+    --success: #28a745;
+    --danger: #dc3545;
+    --warning: #ffc107;
+    --grey: #6c757d;
+}
+
+body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #edf1f7;
+    margin: 0;
+    padding: 20px;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--primary);
+    color: white;
+    padding: 15px 25px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+
+header h2 { margin:0; font-size:24px; }
+.menu-buttons { display:flex; gap:12px; }
+.menu-buttons button {
+    background:white; color:var(--primary);
+    border:none; padding:10px 20px; border-radius:10px;
+    cursor:pointer; font-weight:600; transition:0.25s;
+    display:flex; align-items:center; gap:8px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.15);
+}
+.menu-buttons button:hover {background:#e7f1ff; transform:translateY(-2px);}
+
+.pc-container {
+    background:white;
+    border-radius:12px;
+    margin-bottom:20px;
+    box-shadow:0 3px 8px rgba(0,0,0,0.1);
+    overflow:hidden;
+}
+
+.pc-header {
+    padding:15px 20px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    cursor:pointer;
+    background:#f5f7fa;
+    font-weight:600;
+    transition:0.2s;
+}
+.pc-header:hover { background:#e0e6f0; }
+.pc-content { display:none; padding:20px; }
+
+.add-btn {
+    background:var(--primary);
+    color:#fff;
+    border:none;
+    padding:10px 16px;
+    border-radius:8px;
+    cursor:pointer;
+    font-weight:bold;
+    transition:0.3s;
+    margin-bottom:15px;
+}
+.add-btn:hover { background:#0056b3; transform:translateY(-2px); }
+
+.add-form {
+    display:none;
+    flex-wrap:wrap;
+    gap:10px;
+    margin-bottom:20px;
+    background:#f8f9fa;
+    padding:15px;
+    border-radius:10px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.1);
+}
+.add-form select, .add-form input {
+    padding:8px 10px;
+    border-radius:6px;
+    border:1px solid #ccc;
+    font-size:14px;
+}
+.add-form button {
+    background:var(--success);
+    color:#fff;
+    border:none;
+    padding:8px 15px;
+    border-radius:8px;
+    cursor:pointer;
+    font-weight:bold;
+    transition:0.2s;
+}
+.add-form button:hover { background:#218838; transform:translateY(-1px); }
+
+/* Status pills */
+.status-pill {
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    padding:4px 10px;
+    border-radius:12px;
+    font-size:12px;
+    font-weight:bold;
+    text-transform:capitalize;
+    color:white;
+}
+.status-connected { background:#28a745; }
+.status-unplugged { background:#dc3545; }
+.status-faulty { background:#ffc107; color:#000; }
+.status-missing { background:#6c757d; }
+.status-replaced { background:#FF4000; }
+
+/* Table */
+.peripherals-table { width:100%; border-collapse:collapse; }
+.peripherals-table th, .peripherals-table td {
+    padding:12px 15px;
+    border-bottom:1px solid #eee;
+    text-align:left;
+}
+.peripherals-table th { background:var(--primary); color:white; }
+
+.action-buttons button {
+    margin-right:6px;
+    padding:4px 8px;
+    border-radius:6px;
+    border:none;
+    cursor:pointer;
+}
+.edit-btn { background:#ffc107; color:#fff; }
+.save-btn { background:#28a745; color:#fff; display:none; }
+.cancel-btn { background:#6c757d; color:#fff; display:none; }
+.remove-btn { background:var(--danger); color:#fff; }
+
+.edit-btn:hover, .save-btn:hover, .cancel-btn:hover, .remove-btn:hover { opacity:0.85; }
+
+input.inline-edit { width:100%; padding:4px; border-radius:4px; border:1px solid #ccc; }
+
+/* ============================================================
+   SCAN DEVICES UI
+   ============================================================ */
+
+.scan-devices-section {
+    width: 100%;
+    flex-basis: 100%;
+    margin-top: 12px;
+    padding: 14px;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    background: #f9fafb;
+}
+
+.scan-devices-btn {
+    width: 100%;
+    border: none;
+    background: #2563eb;
+    color: white;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 0.2s ease;
+}
+
+.scan-devices-btn:hover {
+    background: #1d4ed8;
+}
+
+.scan-devices-btn:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+}
+
+.scanned-devices-box {
+    margin-top: 14px;
+}
+
+.scanned-devices-header h4 {
+    margin: 0;
+    font-size: 16px;
+    color: #111827;
+}
+
+.scanned-devices-header p {
+    margin: 4px 0 12px;
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.scanned-devices-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.scanned-device-card {
+    border: 1px solid #d1d5db;
+    border-radius: 12px;
+    background: white;
+    padding: 12px;
+}
+
+.scanned-device-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: #111827;
+    margin: 0 0 4px;
+}
+
+.scanned-device-type {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #dbeafe;
+    color: #1e40af;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: capitalize;
+}
+
+.scanned-device-info {
+    margin: 8px 0;
+    font-size: 12px;
+    color: #374151;
+    word-break: break-all;
+    line-height: 1.4;
+}
+
+.register-scanned-btn {
+    width: 100%;
+    border: none;
+    background: #16a34a;
+    color: white;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.register-scanned-btn:hover {
+    background: #15803d;
+}
+
+.scan-empty-message,
+.scan-error-message {
+    padding: 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.scan-empty-message {
+    background: #fff7ed;
+    color: #9a3412;
+    border: 1px solid #fed7aa;
+}
+
+.scan-error-message {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+/* Fade-in effect */
+.fade-in { animation: fadeIn 0.5s ease-in-out; }
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<header>
+    <h2><i class="fa fa-briefcase"></i> Inventory Management – Computer {{ lab_name }}</h2>
+    <div class="menu-buttons">
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}'"><i class="fas fa-arrow-left"></i> Back</button>
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/view_alerts'"><i class="fa-solid fa-triangle-exclamation"></i> View Alerts</button>
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/peripheral'"><i class="fa fa-list-alt" aria-hidden="true"></i> Peripheral Summary</button>
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/display_usb_devices'"><i class="fas fa-file-alt"></i> View Reports</button>
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/summary'"><i class="fas fa-chart-bar"></i> View Summary</button>
+        <button onclick="window.location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
+    </div>
+</header>
+
+{% for pc in devices %}
+<div class="pc-container">
+    <div class="pc-header" onclick="togglePC('{{ pc.tag }}')">
+        {{ pc.tag }} <i class="fas fa-chevron-down"></i>
+    </div>
+    <div class="pc-content" id="content-{{ pc.tag }}">
+        <button class="add-btn" onclick="toggleAddForm('{{ pc.tag }}')"><i class="fa fa-plug"></i> Add Peripheral</button>
+        <div class="add-form" id="form-{{ pc.tag }}">
+            <select id="type-{{ pc.tag }}">
+                <option value="">Select Device Type</option>
+                <option value="Mouse">Mouse</option>
+                <option value="Keyboard">Keyboard</option>
+                <option value="Headphones">Headphones</option>
+                <option value="Monitor">Monitor</option>
+                <option value="Printer">Printer</option>
+                <option value="Scanner">Scanner</option>
+                <option value="Webcam">Webcam</option>
+                <option value="FlashDrive">FlashDrive</option>
+            </select>
+
+            <input type="text" placeholder="Brand / Model" id="brand-{{ pc.tag }}">
+            <input type="text" placeholder="Unique ID" id="unique_id-{{ pc.tag }}">
+            <input type="text" placeholder="Serial Number" id="serial-{{ pc.tag }}">
+
+            <button onclick="addPeripheralToPC('{{ pc.tag }}')">Add Manually</button>
+
+            <!-- SCAN DEVICES SECTION -->
+            <div class="scan-devices-section">
+                <button type="button" class="scan-devices-btn" onclick="scanConnectedDevices('{{ pc.tag }}', this)">
+                    Scan Devices
+                </button>
+
+                <div id="scannedDevicesBox-{{ pc.tag }}" class="scanned-devices-box" style="display:none;">
+                    <div class="scanned-devices-header">
+                        <h4>Detected Devices</h4>
+                        <p>Select a connected device to register for {{ pc.tag }}.</p>
+                    </div>
+
+                    <div id="scannedDevicesList-{{ pc.tag }}" class="scanned-devices-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+            <span class="status-pill status-connected">Connected</span>
+            <span class="status-pill status-unplugged">Unplugged</span>
+            <span class="status-pill status-faulty">Faulty</span>
+            <span class="status-pill status-missing">Missing</span>
+            <span class="status-pill status-replaced">Replaced</span>
+        </div>
+
+        <table class="peripherals-table" id="table-{{ pc.tag }}">
+            <thead>
+                <tr>
+                    <th>Device</th>
+                    <th>Brand</th>
+                    <th>Serial Number</th>
+                    <th>Unique ID</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                    <th>Remarks</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in pc.peripherals %}
+                <tr id="peripheral-{{ p.id }}">
+                    <td>{{ p.name }}</td>
+                    <td>{{ p.brand }}</td>
+                    <td>{{ p.unique_id }}</td>
+                    <td>{{ p.serial_number }}</td>
+                    <td><span class="status-pill status-{{ p.status }}">{{ p.status }}</span></td>
+                    <td class="action-buttons">
+                        <button class="edit-btn" onclick="enableEdit('{{ p.id }}')">Edit</button>
+                        <button class="save-btn" onclick="saveEdit('{{ p.id }}')">Save</button>
+                        <button class="cancel-btn" onclick="cancelEdit('{{ p.id }}')">Cancel</button>
+                        <button class="remove-btn" onclick="deletePeripheral('{{ p.id }}')">Remove</button>
+                    </td>
+                    <td>{{ p.remarks }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+
+<script>
+const currentLabId = {{ comlab_id | tojson }};
+
+/* ============================================================
+   BASIC TOGGLE
+   ============================================================ */
+
+function togglePC(tag) {
+    const content = document.getElementById("content-" + tag);
+    if (!content) return;
+
+    content.style.display = content.style.display === "block" ? "none" : "block";
+}
+
+function toggleAddForm(tag) {
+    const form = document.getElementById("form-" + tag);
+    if (!form) return;
+
+    form.style.display = form.style.display === "flex" ? "none" : "flex";
+}
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) return "";
+
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+function normalizeStatus(status) {
+    return String(status || "unknown").toLowerCase().trim();
+}
+
+function renderStatusPill(status) {
+    const cleanStatus = normalizeStatus(status);
+
+    return `
+        <span class="status-pill status-${escapeHtml(cleanStatus)}">
+            ${escapeHtml(cleanStatus)}
+        </span>
+    `;
+}
+
+function normalizeTypeForForm(deviceType) {
+    const text = String(deviceType || "").toLowerCase();
+
+    if (text.includes("mouse")) return "Mouse";
+    if (text.includes("keyboard")) return "Keyboard";
+    if (text.includes("printer")) return "Printer";
+    if (text.includes("monitor")) return "Monitor";
+
+    if (
+        text.includes("headset") ||
+        text.includes("headphone") ||
+        text.includes("earphone") ||
+        text.includes("earbud")
+    ) {
+        return "Headphones";
+    }
+
+    return deviceType || "";
+}
+
+function normalizeTypeForBackend(deviceType) {
+    const text = String(deviceType || "").toLowerCase();
+
+    if (text.includes("mouse")) return "Mouse";
+    if (text.includes("keyboard")) return "Keyboard";
+    if (text.includes("printer")) return "Printer";
+    if (text.includes("monitor")) return "Monitor";
+
+    if (text.includes("headset")) return "Headset";
+
+    if (
+        text.includes("headphone") ||
+        text.includes("earphone") ||
+        text.includes("earbud")
+    ) {
+        return "Earphone";
+    }
+
+    return deviceType || "";
+}
+
+function showScanMessage(pcTag, message, type = "empty") {
+    const list = document.getElementById("scannedDevicesList-" + pcTag);
+    if (!list) return;
+
+    const className = type === "error" ? "scan-error-message" : "scan-empty-message";
+
+    list.innerHTML = `
+        <div class="${className}">
+            ${message}
+        </div>
+    `;
+}
+
+/* ============================================================
+   SCAN DEVICES
+   ============================================================ */
+
+async function scanConnectedDevices(pcTag, button) {
+    const box = document.getElementById("scannedDevicesBox-" + pcTag);
+
+    if (!box) {
+        alert("Scan Devices section is missing for " + pcTag);
+        return;
+    }
+
+    box.style.display = "block";
+    showScanMessage(pcTag, "Scanning connected physical devices...");
+
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Scanning...";
+    }
+
+    try {
+        const url = `/api/scan_devices?lab_id=${encodeURIComponent(currentLabId)}&pc_tag=${encodeURIComponent(pcTag)}`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!data.success) {
+            showScanMessage(pcTag, data.message || "Failed to scan devices.", "error");
+            return;
+        }
+
+        if (!data.devices || data.devices.length === 0) {
+            showScanMessage(
+                pcTag,
+                `No physical connected devices found for <strong>${escapeHtml(pcTag)}</strong>.<br>
+                 Make sure the device is plugged in and Flask is running on this same computer.`
+            );
+            return;
+        }
+
+        renderScannedDevices(pcTag, data.devices);
+
+        // Update status table after scan.
+        refreshPeripheralStatuses();
+
+    } catch (error) {
+        console.error("[SCAN ERROR]", error);
+        showScanMessage(pcTag, "Failed to scan devices. Check Flask terminal.", "error");
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = "Scan Devices";
+        }
+    }
+}
+
+function renderScannedDevices(pcTag, devices) {
+    const list = document.getElementById("scannedDevicesList-" + pcTag);
+    if (!list) return;
+
+    list.innerHTML = "";
+
+    devices.forEach(device => {
+        const card = document.createElement("div");
+        card.className = "scanned-device-card";
+
+        const deviceType = normalizeTypeForBackend(device.device_type);
+
+        card.innerHTML = `
+            <p class="scanned-device-name">
+                ${escapeHtml(device.name || "Unknown Device")}
+            </p>
+
+            <span class="scanned-device-type">
+                ${escapeHtml(deviceType || "unknown")}
+            </span>
+
+            <div class="scanned-device-info">
+                <strong>PC:</strong> ${escapeHtml(pcTag)}<br>
+                <strong>Unique ID:</strong> ${escapeHtml(device.unique_id || "")}<br>
+                <strong>Vendor:</strong> ${escapeHtml(device.vendor || "Unknown")}<br>
+                <strong>Product:</strong> ${escapeHtml(device.product || "Unknown")}<br>
+                <strong>Serial:</strong> ${escapeHtml(device.serial_number || device.unique_id || "N/A")}
+            </div>
+
+            <button type="button" class="register-scanned-btn">
+                Register This Device
+            </button>
+        `;
+
+        const registerBtn = card.querySelector(".register-scanned-btn");
+
+        registerBtn.addEventListener("click", function () {
+            fillFormFromScannedDevice(pcTag, device);
+            registerScannedDevice(pcTag, device, registerBtn);
+        });
+
+        list.appendChild(card);
+    });
+}
+
+function fillFormFromScannedDevice(pcTag, device) {
+    const typeInput = document.getElementById("type-" + pcTag);
+    const brandInput = document.getElementById("brand-" + pcTag);
+    const uniqueInput = document.getElementById("unique_id-" + pcTag);
+    const serialInput = document.getElementById("serial-" + pcTag);
+
+    if (typeInput) {
+        typeInput.value = normalizeTypeForForm(device.device_type);
+    }
+
+    if (brandInput) {
+        brandInput.value = device.vendor || device.name || "Unknown";
+    }
+
+    /*
+      Important:
+      Use the same physical unique_id for both fields.
+      This lets the backend compare the registered device against the scan.
+    */
+    if (uniqueInput) {
+        uniqueInput.value = device.unique_id || "";
+    }
+
+    if (serialInput) {
+        serialInput.value = device.unique_id || "";
+    }
+}
+
+/* ============================================================
+   REGISTER SCANNED DEVICE
+   ============================================================ */
+
+async function registerScannedDevice(pcTag, device, button) {
+    if (!device || !device.unique_id) {
+        alert("Invalid scanned device. Missing unique ID.");
+        return;
+    }
+
+    const backendType = normalizeTypeForBackend(device.device_type);
+
+    const payload = {
+        lab_id: currentLabId,
+        pc_tag: pcTag,
+        unique_id: device.unique_id,
+        name: backendType,
+        device_type: backendType,
+        brand: device.vendor || device.name || "Unknown",
+        vendor: device.vendor || "Unknown",
+        product: device.product || "Unknown",
+        serial_number: device.unique_id
+    };
+
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Registering...";
+    }
+
+    try {
+        const response = await fetch("/api/register_scanned_peripheral", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!data.success) {
+            alert(data.message || "Failed to register device.");
+
+            if (button) {
+                button.disabled = false;
+                button.textContent = "Register This Device";
+            }
+
+            return;
+        }
+
+        alert(data.message || "Device registered successfully.");
+
+        // Reload para lumabas agad sa table ang bagong registered peripheral.
+        location.reload();
+
+    } catch (error) {
+        console.error("[REGISTER ERROR]", error);
+        alert("Failed to register scanned device.");
+
+        if (button) {
+            button.disabled = false;
+            button.textContent = "Register This Device";
+        }
+    }
+}
+
+/* ============================================================
+   MANUAL ADD PERIPHERAL
+   ============================================================ */
+
+function addPeripheralToPC(pcTag) {
+    const type = document.getElementById("type-" + pcTag).value;
+    const brand = document.getElementById("brand-" + pcTag).value;
+    const uniqueId = document.getElementById("unique_id-" + pcTag).value;
+    const serial = document.getElementById("serial-" + pcTag).value;
+
+    if (!type || !brand) {
+        alert("Select type and enter brand.");
+        return;
+    }
+
+    if (!uniqueId && !serial) {
+        alert("Please enter or scan the device Unique ID.");
+        return;
+    }
+
+    fetch(`/comlab/${currentLabId}/add_peripheral`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            pc_tag: pcTag,
+            name: type,
+            brand: brand,
+            unique_id: uniqueId || serial,
+            serial_number: serial || uniqueId
+        })
+    })
+    .then(response => response.json())
+    .then(resp => {
+        if (!resp.success) {
+            alert(resp.message || "Failed to add peripheral.");
+            return;
+        }
+
+        const p = resp.peripheral;
+        const table = document.getElementById("table-" + pcTag).getElementsByTagName("tbody")[0];
+        const row = table.insertRow();
+
+        row.id = "peripheral-" + p.id;
+        row.classList.add("fade-in");
+
+        row.innerHTML = `
+            <td>${escapeHtml(p.name)}</td>
+            <td>${escapeHtml(p.brand)}</td>
+            <td>${escapeHtml(p.unique_id || "")}</td>
+            <td>${escapeHtml(p.serial_number || "")}</td>
+            <td>${renderStatusPill(p.status || "connected")}</td>
+            <td class="action-buttons">
+                <button class="edit-btn" onclick="enableEdit('${p.id}')">Edit</button>
+                <button class="save-btn" onclick="saveEdit('${p.id}')">Save</button>
+                <button class="cancel-btn" onclick="cancelEdit('${p.id}')">Cancel</button>
+                <button class="remove-btn" onclick="deletePeripheral('${p.id}')">Remove</button>
+            </td>
+            <td>${escapeHtml(p.remarks || "")}</td>
+        `;
+
+        document.getElementById("type-" + pcTag).value = "";
+        document.getElementById("brand-" + pcTag).value = "";
+        document.getElementById("unique_id-" + pcTag).value = "";
+        document.getElementById("serial-" + pcTag).value = "";
+
+        refreshPeripheralStatuses();
+    })
+    .catch(error => {
+        console.error("[ADD MANUAL ERROR]", error);
+        alert("Failed to add peripheral.");
+    });
+}
+
+/* ============================================================
+   LIVE STATUS REFRESH
+   connected / unplugged / missing / faulty / replaced
+   ============================================================ */
+
+async function refreshPeripheralStatuses() {
+    try {
+        const response = await fetch(`/api/peripheral_statuses/${currentLabId}`);
+        const data = await response.json();
+
+        if (!data.success) {
+            console.warn("[LIVE STATUS ERROR]", data.message);
+            return;
+        }
+
+        data.peripherals.forEach(peripheral => {
+            const row = document.getElementById("peripheral-" + peripheral.id);
+            if (!row) return;
+
+            /*
+              Table columns:
+              0 Device
+              1 Brand
+              2 Serial Number
+              3 Unique ID
+              4 Status
+              5 Action
+              6 Remarks
+            */
+            const statusCell = row.cells[4];
+
+            if (statusCell) {
+                statusCell.innerHTML = renderStatusPill(peripheral.status);
+            }
+        });
+
+    } catch (error) {
+        console.error("[LIVE STATUS FETCH ERROR]", error);
+    }
+}
+
+/* ============================================================
+   INLINE EDIT
+   ============================================================ */
+
+function enableEdit(id) {
+    const row = document.getElementById("peripheral-" + id);
+    if (!row) return;
+
+    const cells = row.cells;
+
+    row.dataset.original = JSON.stringify({
+        type: cells[0].innerText,
+        brand: cells[1].innerText,
+        unique_id: cells[2].innerText,
+        serial: cells[3].innerText,
+        remarks: cells[6].innerText
+    });
+
+    cells[0].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[0].innerText)}">`;
+    cells[1].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[1].innerText)}">`;
+    cells[2].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[2].innerText)}">`;
+    cells[3].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[3].innerText)}">`;
+    cells[6].innerHTML = `<input class="inline-edit" value="${escapeHtml(cells[6].innerText)}">`;
+
+    row.querySelector(".edit-btn").style.display = "none";
+    row.querySelector(".save-btn").style.display = "inline-block";
+    row.querySelector(".cancel-btn").style.display = "inline-block";
+}
+
+function cancelEdit(id) {
+    const row = document.getElementById("peripheral-" + id);
+    if (!row || !row.dataset.original) return;
+
+    const orig = JSON.parse(row.dataset.original);
+
+    row.cells[0].innerText = orig.type;
+    row.cells[1].innerText = orig.brand;
+    row.cells[2].innerText = orig.unique_id;
+    row.cells[3].innerText = orig.serial;
+    row.cells[6].innerText = orig.remarks;
+
+    row.querySelector(".edit-btn").style.display = "inline-block";
+    row.querySelector(".save-btn").style.display = "none";
+    row.querySelector(".cancel-btn").style.display = "none";
+}
+
+function saveEdit(id) {
+    const row = document.getElementById("peripheral-" + id);
+    if (!row) return;
+
+    const inputs = row.querySelectorAll("input.inline-edit");
+
+    const type = inputs[0].value;
+    const brand = inputs[1].value;
+    const uniqueId = inputs[2].value;
+    const serial = inputs[3].value;
+    const remarks = inputs[4].value;
+
+    fetch("/api/edit_peripheral", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            id: id,
+            name: type,
+            brand: brand,
+            unique_id: uniqueId,
+            serial_number: serial,
+            remarks: remarks
+        })
+    })
+    .then(response => response.json())
+    .then(resp => {
+        if (!resp.success) {
+            alert(resp.message || "Failed to save.");
+            return;
+        }
+
+        row.cells[0].innerText = type;
+        row.cells[1].innerText = brand;
+        row.cells[2].innerText = uniqueId;
+        row.cells[3].innerText = serial;
+        row.cells[6].innerText = remarks;
+
+        row.querySelector(".edit-btn").style.display = "inline-block";
+        row.querySelector(".save-btn").style.display = "none";
+        row.querySelector(".cancel-btn").style.display = "none";
+
+        refreshPeripheralStatuses();
+    })
+    .catch(error => {
+        console.error("[SAVE ERROR]", error);
+        alert("Failed to save.");
+    });
+}
+
+/* ============================================================
+   DELETE
+   ============================================================ */
+
+function deletePeripheral(id) {
+    if (!confirm("Remove peripheral?")) return;
+
+    fetch("/api/delete_peripheral", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ id: id })
+    })
+    .then(response => response.json())
+    .then(resp => {
+        if (!resp.success) {
+            alert(resp.message || "Failed to delete.");
+            return;
+        }
+
+        const row = document.getElementById("peripheral-" + id);
+        if (row) row.remove();
+    })
+    .catch(error => {
+        console.error("[DELETE ERROR]", error);
+        alert("Failed to delete.");
+    });
+}
+
+/* ============================================================
+   AUTO START LIVE STATUS
+   ============================================================ */
+
+document.addEventListener("DOMContentLoaded", function () {
+    refreshPeripheralStatuses();
+
+    // Updates status every 3 seconds without page reload.
+    setInterval(refreshPeripheralStatuses, 3000);
+});
+</script>
+
+</body>
+</html>

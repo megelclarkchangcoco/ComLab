@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>User Dashboard</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.12/cropper.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.12/cropper.min.js"></script>
+
+<style>
+/* GENERAL */
+body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #f5f7fa;
+    margin: 0;
+    padding: 0;
+}
+h3, h4 { margin: 0 0 15px 0; }
+
+/* HEADER */
+header {
+    background: #007bff;
+    color: #fff;
+    padding: 18px 25px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 3px 8px rgba(0,0,0,0.15);
+}
+header h2 { font-size: 24px; }
+header button { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; transition: 0.25s; }
+header button:hover { opacity: 0.85; transform: translateY(-1px); }
+button.logout { background: #dc3545; color: #fff; }
+
+/* MAIN LAYOUT */
+.main-content {
+    display: flex;
+    gap: 20px;
+    max-width: 1500px;
+    margin: 30px auto;
+    flex-wrap: wrap;
+}
+
+/* PROFILE CARD */
+.profile-card {
+    flex: 0 0 300px;
+    background: #fff;
+    border-radius: 12px;
+    padding: 25px 20px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    text-align:center;
+}
+.profile-pic {
+    width: 130px;
+    height: 130px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid #007bff;
+    margin-bottom: 15px;
+}
+.profile-card h3 { color: #007bff; margin-bottom: 20px; }
+
+/* UPLOAD PROFILE FORM */
+.upload-form {
+    display:flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 15px;
+}
+.upload-form input[type="file"] { display: none; }
+.file-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #f0f0f0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: 0.2s;
+}
+.file-label:hover { background: #e0e0e0; }
+
+.upload-btn {
+    background: #28a745;
+    color: white;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.2s;
+}
+.upload-btn:hover { background: #218838; transform: translateY(-1px); }
+
+/* PROFILE CARD BUTTONS */
+.profile-card button {
+    width: 100%;
+    margin-top: 8px;
+    padding: 10px 0;
+    border-radius: 8px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: 0.2s;
+}
+.profile-card button.primary { background: #007bff; color: #fff; }
+.profile-card button.primary:hover { background: #0062cc; transform: translateY(-1px); }
+.profile-card button.success { background: #28a745; color: #fff; }
+.profile-card button.success:hover { background: #218838; transform: translateY(-1px); }
+
+/* TABLE */
+.table-container {
+    flex: 1 1 auto;
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    overflow-x: auto;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+table th, table td {
+    padding: 12px 10px;
+    border: 1px solid #ddd;
+    text-align: center;
+}
+table th { background: #007bff; color: white; }
+.status-used { color: green; font-weight: bold; }
+.status-free { color: red; font-weight: bold; }
+
+/* FLASH MESSAGES */
+.flash-success { color: #28a745; font-weight: 600; margin-bottom: 10px; }
+.flash-error { color: #dc3545; font-weight: 600; margin-bottom: 10px; }
+
+/* MODAL */
+.modal {
+    display: none;
+    position: fixed;
+    top:0; left:0;
+    width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5);
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+.modal-content {
+    background: #fff;
+    padding: 30px 25px;
+    border-radius: 12px;
+    width: 400px;
+    max-width: 95%;
+    position: relative;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+    display:flex;
+    flex-direction: column;
+    gap: 15px;
+}
+.modal-content h4 { color: #007bff; font-size: 20px; margin-bottom: 10px; text-align:center; }
+.modal-content form { display: flex; flex-direction: column; gap: 12px; }
+.modal-content input[type="text"],
+.modal-content input[type="password"],
+.modal-content input[type="email"] {
+    padding: 10px;
+    border-radius: 8px;
+    border:1px solid #ccc;
+    font-size: 14px;
+    width:100%;
+}
+.modal-content button {
+    padding: 10px 0;
+    border-radius: 8px;
+    border:none;
+    font-weight:600;
+    cursor:pointer;
+    transition:0.2s;
+}
+.modal-content button.primary { background:#007bff; color:white; }
+.modal-content button.primary:hover { background:#0062cc; transform:translateY(-1px); }
+.modal-content button.success { background:#28a745; color:white; }
+.modal-content button.success:hover { background:#218838; transform:translateY(-1px); }
+
+/* MODAL CLOSE BUTTON */
+.close { position: absolute; top:12px; right:18px; cursor:pointer; font-size:20px; font-weight:bold; color:#555; }
+.close:hover { color:#000; }
+
+/* CROP FIX */
+.crop-container {
+    width: 100%;
+    height: 350px;
+    background: #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.crop-container img {
+    max-width: 100%;
+    max-height: 100%;
+}
+
+/* RESPONSIVE */
+@media (max-width: 900px){
+    .main-content { flex-direction: column; align-items: center; gap: 25px; }
+    .profile-card { width: 100%; max-width: 350px; }
+    .table-container { width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<header>
+    <h2><i class="fa fa-user-circle"></i> User Dashboard</h2>
+    <div>
+        <button class="danger" onclick="requestEmergencyLogout()"><i class="fas fa-exclamation-triangle"></i> Emergency Logout</button>
+        <form style="display:inline;" action="/user/logout" method="get">
+            <button type="submit" class="logout"><i class="fas fa-sign-out-alt"></i> Logout</button>
+        </form>
+    </div>
+</header>
+
+<div class="main-content">
+
+    <!-- PROFILE LEFT -->
+    <div class="profile-card">
+        {% if notifications %}
+        <div style="background:#28a745;color:white;padding:12px;border-radius:8px;margin-bottom:15px;font-weight:bold;">
+            {% for n in notifications %}
+                <div>{{ n["message"] }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% set category, msg = messages[-1] %}
+            {% if category == 'success' %}
+                <p class="flash-success">{{ msg }}</p>
+            {% elif category == 'error' %}
+                <p class="flash-error">{{ msg }}</p>
+            {% else %}
+                <p class="flash-{{ category }}">{{ msg }}</p>
+            {% endif %}
+        {% endif %}
+        {% endwith %}
+
+        <h3>{{ student[1] }}</h3>
+        <img src="{{ student[6] if student[6] else '/static/default.png' }}" class="profile-pic">
+
+        <!-- Upload Form -->
+        <form class="upload-form" enctype="multipart/form-data">
+            <input type="file" name="profile_pic" id="profilePicInput" accept="image/*">
+            <label for="profilePicInput" class="file-label"><i class="fas fa-upload"></i> Choose File</label>
+        </form>
+
+        <!-- Crop Modal -->
+        <div id="cropModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeModal('cropModal')">&times;</span>
+                <h4>Crop Profile Picture</h4>
+                <div class="crop-container">
+                    <img id="cropImage" src="">
+                </div>
+                <button class="success" onclick="getCroppedImage()">Save Cropped Image</button>
+            </div>
+        </div>
+
+        <button class="success" onclick="openModal('profileModal')"><i class="fas fa-user"></i> View/Edit Profile</button>
+    </div>
+
+    <!-- ANOMALIES TABLE CENTER -->
+    <div class="table-container">
+        <h4>User Anomalies</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Computer Lab#</th>
+                    <th>Device Unit</th>
+                    <th>Event Type</th>
+                    <th>Device Type</th>
+                    <th>Unique ID</th>
+                    <th>Timestamp</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if anomalies %}
+                    {% for anomaly in anomalies %}
+                    <tr>
+                        <td>{{ anomaly.location or 'N/A' }}</td>
+                        <td>{{ anomaly.device_name or 'N/A' }}</td>
+                        <td>{{ anomaly.event_type or 'N/A' }}</td>
+                        <td>{{ anomaly.device_type or 'N/A' }}</td>
+                        <td>{{ anomaly.unique_id or 'N/A' }}</td>
+                        <td>{{ anomaly.timestamp or 'N/A' }}</td>
+                        <td>
+                            {% if anomaly.alert_type %}
+                                <span class="status-free">{{ anomaly.alert_type }}</span>
+                            {% elif anomaly.deleted == 0 %}
+                                <span class="status-free">Pending</span>
+                            {% elif anomaly.deleted == 1 %}
+                                <span class="status-used">Cleared</span>
+                            {% else %}
+                                <span class="status-unknown">Unknown</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="7">No anomalies found.</td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Profile Modal -->
+<div id="profileModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeModal('profileModal')">&times;</span>
+        <h4>Profile Info</h4>
+        <form action="/edit_profile" method="POST">
+            <b>Id Number :</b><input type="text" value="{{ student[0] }}" disabled placeholder="ID Number">
+            <b>Password :</b><input type="text" value="********" disabled placeholder="Password">
+            <b>Full Name :</b><input type="text" name="full_name" value="{{ student[1] }}" placeholder="Full Name" required>
+            <b>Grade :</b><input type="text" name="grade" value="{{ student[3] }}" placeholder="Grade" required>
+            <b>Section :</b><input type="text" name="section" value="{{ student[4] }}" placeholder="Section" required>
+            <b>Email :</b><input type="email" name="email" value="{{ student[2] }}" placeholder="Email" required>
+            <b>Contact Number :</b><input type="text" name="contact" value="{{ student[5] }}" placeholder="Contact Number">
+            <button type="submit" class="success">Submit Changes</button>
+            <p style="margin-top:5px; font-size:12px; color:#555;"><i>All edits require admin verification.</i></p>
+        </form>
+    </div>
+</div>
+
+<script>
+// Flash messages auto-hide
+document.addEventListener('DOMContentLoaded', () => {
+    const flashMessages = document.querySelectorAll('.flash-success, .flash-error');
+    flashMessages.forEach(msg => {
+        setTimeout(() => {
+            msg.style.transition = 'opacity 0.5s ease-out';
+            msg.style.opacity = '0';
+            setTimeout(() => msg.remove(), 500);
+        }, 5000);
+    });
+});
+
+// Cropper
+let cropper;
+
+// Open modal
+function openModal(id) {
+    const modal = document.getElementById(id);
+
+    if (id === 'cropModal') {
+        const profilePicInput = document.getElementById('profilePicInput');
+        const file = profilePicInput.files[0];
+
+        if (!file) { alert('Please select an image first.'); return; }
+
+        const image = document.getElementById('cropImage');
+        const reader = new FileReader();
+
+        reader.onload = function(e) {
+            image.src = e.target.result;
+            modal.style.display = 'flex';
+            if (cropper) cropper.destroy();
+
+            cropper = new Cropper(image, {
+                aspectRatio: 1,
+                viewMode: 1,
+                autoCropArea: 1,
+                responsive: true,
+                background: false,
+                movable: true,
+                zoomable: true
+            });
+        }
+
+        reader.readAsDataURL(file);
+    } else {
+        modal.style.display = 'flex';
+    }
+}
+
+// Close modal
+function closeModal(id) {
+    const modal = document.getElementById(id);
+    modal.style.display = 'none';
+
+    if (id === 'cropModal' && cropper) {
+        cropper.destroy();
+        cropper = null;
+        document.getElementById('profilePicInput').value = '';
+    }
+}
+
+// Crop and upload
+function getCroppedImage() {
+    if (!cropper) return;
+
+    cropper.getCroppedCanvas({
+        width: 400,
+        height: 400,
+        fillColor: '#fff'
+    }).toBlob((blob) => {
+        const formData = new FormData();
+        formData.append('croppedImage', blob, 'profile.png');
+
+        fetch('/upload_cropped_profile', { method: 'POST', body: formData })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+               document.querySelector('.profile-pic').src = data.image_url + '?t=' + new Date().getTime();
+               closeModal('cropModal');
+            } else {
+               alert('Failed to upload cropped image.');
+               console.error(data);
+            }
+        })
+        .catch(err => { console.error(err); alert('Upload error'); });
+    }, 'image/png');
+}
+
+// File input change
+document.getElementById('profilePicInput').addEventListener('change', () => openModal('cropModal'));
+
+// Close modal via close button
+document.querySelectorAll('.modal .close').forEach(btn => {
+    btn.addEventListener('click', e => {
+        const modal = e.target.closest('.modal');
+        closeModal(modal.id);
+    });
+});
+
+// Emergency logout
+function requestEmergencyLogout() {
+    if(confirm("Are you sure? Request will be sent to admin for approval.")){
+        fetch("/request_emergency_logout", { method: "POST" })
+        .then(r => r.json())
+        .then(d => alert(d.message));
+    }
+}
+
+// Force logout checker
+function checkForceLogout() {
+    fetch('/api/check_logout')
+        .then(response => response.json())
+        .then(data => {
+            if (data.force_logout) window.location.href = "/login";
+        })
+        .catch(err => console.error("Error checking logout:", err));
+}
+setInterval(checkForceLogout, 5000);
+
+</script>
+
+</body>
+</html>
