@@ -1115,140 +1115,223 @@ def reject_edit(edit_id):
 def usb_event():
     from datetime import datetime
     data = request.get_json()
+
     try:
         conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
+        cur  = conn.cursor()
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        event_type  = data['event_type']     # "connected" or "disconnected"
+        device_type = data['device_type']    # e.g. "Mouse"
+        unique_id   = data['unique_id']      # serial/unique id of the actual plugged device
+        device_name = data['device_name']    # pc_tag  e.g. "PC-Win33"
+        location    = data['location']       # lab_id  e.g. "1"
+        user_id     = data.get('user_id', '')
+        vendor      = data.get('vendor', '')
+        product     = data.get('product', '')
+        username    = data.get('username', '')
 
-        # INSERT USB EVENT
-        cur.execute("""
-            INSERT INTO usb_devices 
-            (event_type, device_type, vendor, product, unique_id, username, timestamp, pc_tag, user_id, device_name, location)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            data['event_type'], data['device_type'], data['vendor'], data['product'],data['unique_id'], data['username'], timestamp, data['pc_tag'],
-            data['user_id'], data['device_name'], data['location']
-        ))
-        # 1) UPDATE STATUS BASED ON CONNECT / UNPLUG
-        new_status = None
         alert_type = None
 
-        if data['event_type'] == "connected":
-            cur.execute("""
-                            SELECT serial_number FROM peripherals
-                            WHERE name = ? AND lab_id = ? AND assigned_pc = ?
-                        """, ( data['device_type'], data['location'], data['device_name']))
-            device = cur.fetchone()
-            if device:
-                if device:
-                    serial_number = device[0]
-                    if serial_number != data['unique_id']:
-                        new_status = "replaced"
-                        alert_type = "replaced"
-                    else:
-                        new_status = "connected"
-                # Update status
-                print("new status",new_status)
-                cur.execute("""
-                        UPDATE peripherals
-                        SET status = ?
-                        WHERE name = ? AND lab_id = ? AND assigned_pc = ?
-                    """, (new_status, data['device_type'], data['location'], data['device_name']))
-                if alert_type:
+        # ── 1. Log raw USB event ──────────────────────────────────────────
+        cur.execute("""
+            INSERT INTO usb_devices
+            (event_type, device_type, vendor, product, unique_id,
+             username, timestamp, pc_tag, user_id, device_name, location)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event_type, device_type, vendor, product, unique_id,
+            username, timestamp, device_name, user_id, device_name, location
+        ))
+
+        # ── 2. Log to peripheral_logs (used for cycle / missing detection) ─
+        cur.execute("""
+            INSERT INTO peripheral_logs
+            (unique_id, event_type, device_type, timestamp, device_name)
+            VALUES (?, ?, ?, ?, ?)
+        """, (unique_id, event_type, device_type, timestamp, device_name))
+
+        # ── 3. Look up the registered peripheral for this pc + device type ─
+        #       Match by device type name AND pc AND lab.
+        #       We do NOT match by serial here — we need the registered row
+        #       regardless of which physical unit is plugged in.
+        cur.execute("""
+            SELECT id, serial_number, unique_id AS reg_unique
+            FROM peripherals
+            WHERE LOWER(name)    = LOWER(?)
+              AND assigned_pc    = ?
+              AND lab_id         = ?
+            LIMIT 1
+        """, (device_type, device_name, location))
+        registered = cur.fetchone()
+
+        # ── 4. CONNECTED logic ────────────────────────────────────────────
+        if event_type == "connected":
+            if registered:
+                reg_id, reg_serial, reg_unique = registered
+                # Use whichever field is filled as the "known" id
+                known_id = reg_serial or reg_unique
+
+                if known_id == unique_id:
+                    # Same device plugged back in → connected
+                    cur.execute(
+                        "UPDATE peripherals SET status = 'connected' WHERE id = ?",
+                        (reg_id,)
+                    )
+                else:
+                    # Different serial plugged in → replaced
+                    cur.execute(
+                        "UPDATE peripherals SET status = 'replaced' WHERE id = ?",
+                        (reg_id,)
+                    )
+                    alert_type = "replaced"
+                    # Only insert alert if none exists yet for this device
                     cur.execute("""
-                        INSERT INTO peripheral_alerts (serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (data['unique_id'], alert_type, timestamp, data['device_name'], data['location'],
-                          data['event_type'], data['device_type'], data['user_id']))
-        elif data['event_type'] == "disconnected":
-            new_status = "unplugged"
+                        SELECT id FROM peripheral_alerts
+                        WHERE serial_number = ? AND alert_type = 'replaced' AND deleted = 0
+                        LIMIT 1
+                    """, (unique_id,))
+                    if not cur.fetchone():
+                        cur.execute("""
+                            INSERT INTO peripheral_alerts
+                            (serial_number, alert_type, timestamp, device_name,
+                             location, event_type, device_type, user_id)
+                            VALUES (?, 'replaced', ?, ?, ?, ?, ?, ?)
+                        """, (unique_id, timestamp, device_name, location,
+                              event_type, device_type, user_id))
 
-        if new_status:
+            # ── Faulty check: rapid plug/unplug cycles in last 10 min ─────
             cur.execute("""
-                UPDATE peripherals
-                SET status = ?
-                WHERE name = ? AND serial_number = ? AND assigned_pc = ?
-            """, (new_status, data['device_type'], data['unique_id'], data['device_name']))
-
-        cur.execute("""
-                INSERT INTO peripheral_logs (unique_id, event_type, device_type, timestamp, device_name)
-                VALUES (?, ?, ?, ?, ?)
-            """, (data['unique_id'], data['event_type'], data['device_type'], timestamp, data['device_name']))
-
-        cur.execute("""
-                SELECT event_type
-                FROM peripheral_logs
+                SELECT event_type FROM peripheral_logs
                 WHERE unique_id = ?
                   AND datetime(timestamp) >= datetime('now', '-10 minutes')
                 ORDER BY datetime(timestamp) ASC
-            """, (data['unique_id'],))
+            """, (unique_id,))
+            events = [r[0] for r in cur.fetchall()]
+            cycle_count = sum(
+                1 for i in range(len(events) - 1)
+                if events[i] == "connected" and events[i + 1] == "disconnected"
+            )
 
-        events = [row[0] for row in cur.fetchall()]
-        cycle_count = 0
-
-        for i in range(len(events) - 1):
-            if events[i] == "connected" and events[i + 1] == "disconnected":
-                cycle_count += 1
-
-        if cycle_count >= 3:
-            cur.execute("""
-                    UPDATE peripherals
-                    SET status = 'faulty'
-                    WHERE serial_number = ?
-                """, (data['unique_id'],))
-            alert_type = "faulty"
-            if alert_type:
+            if cycle_count >= 3:
+                if registered:
+                    cur.execute(
+                        "UPDATE peripherals SET status = 'faulty' WHERE id = ?",
+                        (registered[0],)
+                    )
+                alert_type = "faulty"
                 cur.execute("""
-                    INSERT INTO peripheral_alerts (serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (data['unique_id'], alert_type, timestamp, data['device_name'], data['location'], data['event_type'], data['device_type'], data['user_id']))
-
-        #   MISSING CHECK (last disconnected older than 10min)
-        cur.execute("""
-                SELECT timestamp FROM peripheral_logs
-                WHERE unique_id = ?
-                  AND event_type = 'disconnected'
-                ORDER BY timestamp DESC LIMIT 1
-            """, (data['unique_id'],))
-
-        last_unplug = cur.fetchone()
-
-        if last_unplug:
-            ts = last_unplug[0]
-
-            try:
-                last_unplug_time = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            except:
-                last_unplug_time = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
-
-            now = datetime.now()
-
-            if (now - last_unplug_time).total_seconds() >= 600:  # 10 minutes
-                cur.execute("""
-                        UPDATE peripherals
-                        SET status = 'missing'
-                        WHERE serial_number = ?
-                    """, (data['unique_id'],))
-                alert_type = "missing"
-                if alert_type:
+                    SELECT id FROM peripheral_alerts
+                    WHERE serial_number = ? AND alert_type = 'faulty' AND deleted = 0
+                    LIMIT 1
+                """, (unique_id,))
+                if not cur.fetchone():
                     cur.execute("""
-                        INSERT INTO peripheral_alerts (serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (data['unique_id'], alert_type, timestamp, data['device_name'], data['location'], data['event_type'], data['device_type'], data['user_id']))
+                        INSERT INTO peripheral_alerts
+                        (serial_number, alert_type, timestamp, device_name,
+                         location, event_type, device_type, user_id)
+                        VALUES (?, 'faulty', ?, ?, ?, ?, ?, ?)
+                    """, (unique_id, timestamp, device_name, location,
+                          event_type, device_type, user_id))
+
+        # ── 5. DISCONNECTED logic ─────────────────────────────────────────
+        elif event_type == "disconnected":
+            if registered:
+                reg_id, reg_serial, reg_unique = registered
+                known_id = reg_serial or reg_unique
+
+                # Mark unplugged using the row id — safe regardless of serial
+                cur.execute(
+                    "UPDATE peripherals SET status = 'unplugged' WHERE id = ?",
+                    (reg_id,)
+                )
+
+                # Faulty check on disconnect side too
+                cur.execute("""
+                    SELECT event_type FROM peripheral_logs
+                    WHERE unique_id = ?
+                      AND datetime(timestamp) >= datetime('now', '-10 minutes')
+                    ORDER BY datetime(timestamp) ASC
+                """, (known_id,))
+                events = [r[0] for r in cur.fetchall()]
+                cycle_count = sum(
+                    1 for i in range(len(events) - 1)
+                    if events[i] == "connected" and events[i + 1] == "disconnected"
+                )
+                if cycle_count >= 3:
+                    cur.execute(
+                        "UPDATE peripherals SET status = 'faulty' WHERE id = ?",
+                        (reg_id,)
+                    )
+                    alert_type = "faulty"
+                    cur.execute("""
+                        SELECT id FROM peripheral_alerts
+                        WHERE serial_number = ? AND alert_type = 'faulty' AND deleted = 0
+                        LIMIT 1
+                    """, (known_id,))
+                    if not cur.fetchone():
+                        cur.execute("""
+                            INSERT INTO peripheral_alerts
+                            (serial_number, alert_type, timestamp, device_name,
+                             location, event_type, device_type, user_id)
+                            VALUES (?, 'faulty', ?, ?, ?, ?, ?, ?)
+                        """, (known_id, timestamp, device_name, location,
+                              event_type, device_type, user_id))
+
+            # ── Missing check ─────────────────────────────────────────────
+            # Only check on disconnect. Get the PREVIOUS disconnect timestamp
+            # (not the one we just inserted — skip it with OFFSET 1).
+            cur.execute("""
+                SELECT timestamp FROM peripheral_logs
+                WHERE unique_id  = ?
+                  AND event_type = 'disconnected'
+                ORDER BY datetime(timestamp) DESC
+                LIMIT 1 OFFSET 1
+            """, (unique_id,))
+            prev_unplug = cur.fetchone()
+
+            if prev_unplug:
+                try:
+                    prev_time = datetime.strptime(prev_unplug[0], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    try:
+                        prev_time = datetime.strptime(prev_unplug[0], "%Y-%m-%d %H:%M:%S.%f")
+                    except Exception:
+                        prev_time = None
+
+                if prev_time:
+                    elapsed = (datetime.now() - prev_time).total_seconds()
+                    if elapsed >= 600:   # 10 minutes
+                        if registered:
+                            cur.execute(
+                                "UPDATE peripherals SET status = 'missing' WHERE id = ?",
+                                (registered[0],)
+                            )
+                        alert_type = "missing"
+                        cur.execute("""
+                            SELECT id FROM peripheral_alerts
+                            WHERE serial_number = ? AND alert_type = 'missing' AND deleted = 0
+                            LIMIT 1
+                        """, (unique_id,))
+                        if not cur.fetchone():
+                            cur.execute("""
+                                INSERT INTO peripheral_alerts
+                                (serial_number, alert_type, timestamp, device_name,
+                                 location, event_type, device_type, user_id)
+                                VALUES (?, 'missing', ?, ?, ?, ?, ?, ?)
+                            """, (unique_id, timestamp, device_name, location,
+                                  event_type, device_type, user_id))
 
         conn.commit()
         conn.close()
 
-        return jsonify({
-            "status": "success",
-            "alert": alert_type
-        }), 200
+        return jsonify({"status": "success", "alert": alert_type}), 200
 
     except sqlite3.Error as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-
-
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    
 @app.route("/comlab/<int:comlab_id>/inventory/display_usb_devices")
 def display_usb_devices(comlab_id):
     try:
