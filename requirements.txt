@@ -3,3 +3,6 @@ gunicorn
 Werkzeug
 Pillow
 psycopg2-binary
+wmi 
+pywin32 
+requests
