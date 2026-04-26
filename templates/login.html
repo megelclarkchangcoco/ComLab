@@ -112,7 +112,7 @@
         </div>
 
         <h2>LOGIN PAGE</h2>
-        <form action="{{ url_for('login', pc_tag=pc_tag or request.args.get('pc_tag', '')) }}" method="POST">
+        <form action="/login" method="POST">
             <input
                 type="hidden"
                 name="pc_tag"

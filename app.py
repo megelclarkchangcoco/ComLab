@@ -4,7 +4,7 @@ import os
 from PIL import Image
 from flask import Response
 import time
-from flask import Flask, render_template, request, session, redirect, url_for, jsonify,flash
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify, flash, make_response
 import sqlite3
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -15,8 +15,94 @@ import smtplib
 from email.mime.text import MIMEText
 
 app = Flask(__name__)
-app.secret_key = "supersecretkey"
+app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 DB_FILE = "database.db"
+
+# ============================================================
+# REGISTERED DEVICE COOKIE HELPERS
+# Admin can login anywhere.
+# Student/Professor can login only from the browser/device
+# that was registered through the Register Device link.
+# ============================================================
+
+def ensure_device_key_column():
+    """
+    Adds device_key column to devices table if it does not exist.
+    This is needed for Render deployment because IP/hostname is not reliable
+    for identifying the real classroom PC/laptop.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(devices)")
+            columns = [row[1] for row in cur.fetchall()]
+
+            if "device_key" not in columns:
+                cur.execute("ALTER TABLE devices ADD COLUMN device_key TEXT")
+                conn.commit()
+                print("[DB MIGRATION] Added device_key column to devices table.")
+    except Exception as e:
+        print("[DB MIGRATION ERROR - device_key]", e)
+
+
+def get_client_ip():
+    """
+    Returns client IP for reference only.
+    Do not use this as the official PC identity on Render.
+    """
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return request.remote_addr
+
+
+def resolve_registered_pc_from_cookie():
+    """
+    Returns the registered PC row using the device cookie.
+    This is the reliable identity for student/professor login.
+    """
+    ensure_device_key_column()
+
+    device_key = request.cookies.get("comlab_device_key")
+
+    if not device_key:
+        return None
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT id, tag, location, comlab_id, hostname, ip_address, device_key
+                FROM devices
+                WHERE device_key = ?
+                LIMIT 1
+            """, (device_key,))
+
+            return cur.fetchone()
+    except Exception as e:
+        print("[DEVICE COOKIE LOOKUP ERROR]", e)
+        return None
+
+
+def get_login_pc_tag():
+    """
+    Shows the PC tag on login page if the browser is registered.
+    URL/form pc_tag is only fallback for local testing.
+    """
+    registered_pc = resolve_registered_pc_from_cookie()
+
+    if registered_pc:
+        return registered_pc["tag"]
+
+    return (
+        request.form.get("pc_tag")
+        or request.args.get("pc_tag")
+        or session.get("pc_tag")
+        or ""
+    ).strip()
+
 # ---------------- LOGIN PAGE ----------------
 @app.route("/")
 def home():
@@ -92,77 +178,94 @@ def monitor_devices(username):
 # ---------------- api LOGIN ACCOUNT ----------------
 @app.route("/api/logged_in_user")
 def get_logged_in_user():
-    pc_tag = request.form.get("pc_tag") or request.args.get("pc_tag") or socket.gethostname()
+    """
+    Used by agents/pages to identify who is currently using this registered PC.
+    Prefer cookie-registered PC. Fallback to pc_tag only for local testing.
+    """
+    registered_pc = resolve_registered_pc_from_cookie()
+    pc_tag = ""
+
+    if registered_pc:
+        pc_tag = registered_pc["tag"]
+        location = registered_pc["comlab_id"] or registered_pc["location"]
+    else:
+        pc_tag = (
+            request.args.get("pc_tag")
+            or request.form.get("pc_tag")
+            or session.get("pc_tag")
+            or ""
+        ).strip()
+        location = None
+
     if not pc_tag:
-        return jsonify({"error": "Missing pc_tag"}), 400
-
-    with sqlite3.connect(DB_FILE) as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT student_name, student_id FROM active_sessions WHERE pc_tag=?", (pc_tag,))
-        row = cur.fetchone()
-
-        if row:
-            student_name = row[0]
-            student_id = row[1]
-
-            # Get device_name from devices table
-            cur.execute("SELECT tag,location FROM devices WHERE hostname = ?", (pc_tag,))
-            device_row = cur.fetchone()
-            if device_row:
-                tag, location = device_row
-            else:
-                tag, location = None,None
-
-
-            return jsonify({
-                "username": student_name,
-                "user_id": student_id,
-                "device_name": tag,
-                "location": location
-            })
-
-        # Return empty JSON when no logged-in user
         return jsonify({
             "username": None,
             "user_id": None,
             "device_name": None,
             "location": None
-
         })
+
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT student_name, student_id, pc_tag
+            FROM active_sessions
+            WHERE pc_tag = ?
+            LIMIT 1
+        """, (pc_tag,))
+        row = cur.fetchone()
+
+        if not location:
+            cur.execute("""
+                SELECT location, comlab_id
+                FROM devices
+                WHERE tag = ?
+                LIMIT 1
+            """, (pc_tag,))
+            device_row = cur.fetchone()
+            if device_row:
+                location = device_row["comlab_id"] or device_row["location"]
+
+        if row:
+            return jsonify({
+                "username": row["student_name"],
+                "user_id": row["student_id"],
+                "device_name": row["pc_tag"],
+                "location": location
+            })
+
+        return jsonify({
+            "username": None,
+            "user_id": None,
+            "device_name": pc_tag,
+            "location": location
+        })
+
 # ---------------- LOGIN ACCOUNT ----------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    pc_tag = (
-        request.form.get("pc_tag")
-        or request.args.get("pc_tag")
-        or session.get("pc_tag")
-        or ""
-    ).strip()
+    """
+    Admin login:
+        Can login anywhere. No registered device required.
+
+    Student/Professor login:
+        Must login from a browser/device registered through Register Device.
+        This prevents a student from making another PC show as In Use.
+    """
+    ensure_device_key_column()
+
+    pc_tag = get_login_pc_tag()
 
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         login_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        if not pc_tag:
-            flash("PC Unit is missing. Please open the login link with pc_tag.", "error")
-            return redirect(url_for("login"))
-
         with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-
-            # Make sure this PC tag exists.
-            cur.execute("""
-                SELECT id
-                FROM devices
-                WHERE tag = ?
-                LIMIT 1
-            """, (pc_tag,))
-            pc_exists = cur.fetchone()
-
-            if not pc_exists:
-                flash(f"PC tag '{pc_tag}' is not registered. Please register this PC first.", "error")
-                return redirect(url_for("login", pc_tag=pc_tag))
 
             cur.execute("""
                 SELECT username, password, role, status, name
@@ -173,28 +276,50 @@ def login():
 
             if not row:
                 flash("Invalid username or password!", "error")
-                return redirect(url_for("login", pc_tag=pc_tag))
+                return redirect(url_for("login"))
 
-            username_db, password_db, role, status, student_name = row
+            username_db = row["username"]
+            password_db = row["password"]
+            role = row["role"]
+            status = row["status"]
+            student_name = row["name"]
 
             if status == "pending":
                 flash("Your account is pending. Please wait for admin approval.", "error")
-                return redirect(url_for("login", pc_tag=pc_tag))
+                return redirect(url_for("login"))
 
             if not check_password_hash(password_db, password):
                 flash("Invalid username or password!", "error")
-                return redirect(url_for("login", pc_tag=pc_tag))
+                return redirect(url_for("login"))
 
-            session["username"] = username_db
-            session["role"] = role
-            session["pc_tag"] = pc_tag
-            session["login_time"] = int(time.time())
-            session.modified = True
-
+            # ADMIN CAN LOGIN ANYWHERE.
             if role == "admin":
+                session.clear()
+                session["username"] = username_db
+                session["role"] = role
+                session["login_time"] = int(time.time())
+                session.modified = True
                 return redirect(url_for("admin_dashboard"))
 
+            # STUDENT / PROFESSOR MUST USE REGISTERED DEVICE COOKIE.
             if role in ["user", "professor"]:
+                registered_pc = resolve_registered_pc_from_cookie()
+
+                if not registered_pc:
+                    flash("This device is not registered as a PC unit. Please use the registered PC/laptop.", "error")
+                    return redirect(url_for("login"))
+
+                pc_tag = registered_pc["tag"]
+
+                session.clear()
+                session["username"] = username_db
+                session["role"] = role
+                session["pc_tag"] = pc_tag
+                session["login_time"] = int(time.time())
+                session.modified = True
+
+                # Same student can only be active in one PC.
+                # Same PC can only have one active user.
                 cur.execute("""
                     DELETE FROM active_sessions
                     WHERE student_id = ?
@@ -208,10 +333,11 @@ def login():
                 """, (pc_tag, username_db, login_time, student_name))
 
                 conn.commit()
+
                 return redirect(url_for("student_dashboard"))
 
             flash("Unknown account role.", "error")
-            return redirect(url_for("login", pc_tag=pc_tag))
+            return redirect(url_for("login"))
 
     return render_template("login.html", pc_tag=pc_tag)
 
@@ -227,6 +353,13 @@ def admin_dashboard():
 
 @app.route("/register_device/<token>", methods=["GET", "POST"])
 def register_device(token):
+    """
+    Registers the current browser/device as a PC unit.
+    A device_key cookie is saved on this browser.
+    Students/professors can only login as In Use from this registered browser.
+    """
+    ensure_device_key_column()
+
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.cursor()
 
@@ -255,15 +388,12 @@ def register_device(token):
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             comlab_id = int(location)
 
-            # Do not use socket.gethostname() on Render.
-            # It returns the Render server hostname, not the actual PC.
+            # For Render, do not use socket.gethostname() as identity.
+            # Use PC tag as stable identity.
             hostname = tag
 
-            # Do not rely on IP for identity.
-            # Keep it for reference only.
-            ip_addr = request.headers.get("X-Forwarded-For", request.remote_addr)
-            if ip_addr and "," in ip_addr:
-                ip_addr = ip_addr.split(",")[0].strip()
+            # IP is reference only.
+            ip_addr = get_client_ip()
 
             cur.execute("""
                 SELECT id
@@ -277,25 +407,36 @@ def register_device(token):
                 flash(f"PC tag '{tag}' is already registered.", "error")
                 return redirect(url_for("register_device", token=token))
 
+            device_key = secrets.token_urlsafe(32)
+
             cur.execute("""
                 INSERT INTO devices
-                (tag, location, hostname, ip_address, created_at, comlab_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (tag, location, hostname, ip_address, created_at, comlab_id, device_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 tag,
                 location,
                 hostname,
                 ip_addr,
                 created_at,
-                comlab_id
+                comlab_id,
+                device_key
             ))
 
             cur.execute("UPDATE device_tokens SET used = 1 WHERE id = ?", (row[0],))
             conn.commit()
 
-            # After registering PC, go to login with correct pc_tag.
-            flash(f"{tag} registered successfully. You may now log in.", "success")
-            return redirect(url_for("login", pc_tag=tag))
+            flash(f"{tag} registered successfully. This browser is now linked to this PC.", "success")
+
+            response = make_response(redirect(url_for("login")))
+            response.set_cookie(
+                "comlab_device_key",
+                device_key,
+                max_age=60 * 60 * 24 * 365,
+                httponly=True,
+                samesite="Lax"
+            )
+            return response
 
     return render_template("register_device.html", comlabs=comlabs)
 
@@ -318,8 +459,21 @@ def generate_link():
     return render_template("link_generated.html", link=link, comlabs=comlabs)
 @app.route("/logout")
 def logout():
+    logged_in_student = session.get("username")
+
+    if logged_in_student:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                DELETE FROM active_sessions
+                WHERE student_id = ?
+            """, (logged_in_student,))
+            conn.commit()
+
+    session.clear()
     flash("Logged out successfully!", "success")
     return redirect(url_for("login"))
+
 from datetime import datetime
 from flask import session, flash, redirect, url_for
 import sqlite3
@@ -747,7 +901,7 @@ def student_dashboard():
     login_time = session.get("login_time", int(time.time()))
 
     if not username:
-        return redirect("/login")
+        return redirect(url_for("login"))
 
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
@@ -871,7 +1025,7 @@ def upload_profile():
     else:
         flash("Invalid file type.", "error")
 
-    return redirect("/student_dashboard")
+    return redirect(url_for("student_dashboard"))
 
 
 # Change Password (via modal or icon)
@@ -884,11 +1038,11 @@ def change_password():
 
     if not current_pw or not new_pw or not confirm_pw:
         flash("Please fill all fields.", "error")
-        return redirect("/student_dashboard")
+        return redirect(url_for("student_dashboard"))
 
     if new_pw != confirm_pw:
         flash("New passwords do not match.", "error")
-        return redirect("/student_dashboard")
+        return redirect(url_for("student_dashboard"))
 
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.cursor()
@@ -902,7 +1056,7 @@ def change_password():
         else:
             flash("Current password incorrect.", "error")
 
-    return redirect("/student_dashboard")
+    return redirect(url_for("student_dashboard"))
 
 
 # View/Edit profile (admin verification required)
@@ -921,7 +1075,7 @@ def edit_profile():
         conn.commit()
 
     flash("Profile edit request submitted for admin verification.", "success")
-    return redirect("/student_dashboard")
+    return redirect(url_for("student_dashboard"))
 
 @app.route("/api/profile_edits_pending")
 def api_profile_edits_pending():
@@ -1981,10 +2135,29 @@ def embedded_get_connected_devices():
 
 def embedded_identify_current_pc():
     """
-    Finds this current PC from devices table using hostname.
-    This allows many labs and many PCs.
+    Finds current PC for the embedded/local scanner.
+    Priority:
+    1. session pc_tag if available
+    2. registered browser cookie if available
+    3. hostname fallback for local-only deployment
+
+    Note: Render cannot scan a client PC's USB devices.
+    Use local DetectionAgent for deployed multi-PC setup.
     """
-    hostname = socket.gethostname()
+    try:
+        session_pc_tag = session.get("pc_tag") if request else None
+    except Exception:
+        session_pc_tag = None
+
+    try:
+        registered_pc = resolve_registered_pc_from_cookie()
+        if registered_pc:
+            lab_id = registered_pc["comlab_id"] if registered_pc["comlab_id"] else registered_pc["location"]
+            return str(lab_id), registered_pc["tag"]
+    except Exception:
+        pass
+
+    hostname = session_pc_tag or socket.gethostname()
 
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -1995,14 +2168,15 @@ def embedded_identify_current_pc():
             SELECT id, tag, location, comlab_id, hostname
             FROM devices
             WHERE LOWER(hostname) = LOWER(?)
+               OR LOWER(tag) = LOWER(?)
             LIMIT 1
-        """, (hostname,))
+        """, (hostname, hostname))
 
         row = cur.fetchone()
         conn.close()
 
         if not row:
-            print(f"[EMBEDDED AGENT] Hostname not registered in devices table: {hostname}")
+            print(f"[EMBEDDED AGENT] PC not registered in devices table: {hostname}")
             return None, None
 
         lab_id = row["comlab_id"] if row["comlab_id"] else row["location"]
@@ -2013,6 +2187,7 @@ def embedded_identify_current_pc():
     except Exception as e:
         print("[EMBEDDED IDENTIFY ERROR]", e)
         return None, None
+
 
 
 def embedded_get_active_user(cur, pc_tag):
@@ -2755,5 +2930,8 @@ def start_embedded_detection_agent():
 
 
 if __name__ == "__main__":
-    start_embedded_detection_agent()
+    # Embedded scanner is for local testing only.
+    # Do not use it as the only scanner after deploying to Render.
+    if os.environ.get("DISABLE_EMBEDDED_SCANNER", "0") != "1":
+        start_embedded_detection_agent()
     app.run(debug=True, use_reloader=False)
