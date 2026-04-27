@@ -599,6 +599,8 @@ def comlab_view(comlab_id):
     )
 @app.route("/account-management")
 def account_management():
+    if "username" not in session or session.get("role") != "admin":
+        return redirect(url_for("login"))
 
     account_type = request.args.get("type", "user")
 
@@ -608,28 +610,43 @@ def account_management():
 
         if account_type == "user":
             cur.execute("""
-                        SELECT id, username, name, password, grade, section, role, created_at
-                        FROM users
-                        WHERE (role = 'user' OR role = 'professor') AND status = 'active'
-                        ORDER BY id DESC
-                        """)
+                SELECT id, username, name, password, grade, section, role, created_at
+                FROM users
+                WHERE (role = 'user' OR role = 'professor')
+                  AND status = 'active'
+                ORDER BY id DESC
+            """)
         else:  # admin
             cur.execute("""
-                        SELECT id, username, name, password, created_at, role
-                        FROM users
-                        WHERE role = 'admin'
-                          AND status = 'active'
-                        ORDER BY id DESC
-                        """)
-        data = cur.fetchall()
-    # Convert Row to dict para mas safe sa Jinja
-    data = [dict(row) for row in data]
+                SELECT id, username, name, password, created_at, role
+                FROM users
+                WHERE role = 'admin'
+                  AND status = 'active'
+                ORDER BY id DESC
+            """)
 
-    return render_template("account_management.html", data=data, account_type=account_type)
+        data = [dict(row) for row in cur.fetchall()]
+
+        # Needed by the pending accounts modal in account_management.html.
+        cur.execute("""
+            SELECT id, username, name, grade, section, role, created_at
+            FROM users
+            WHERE status = 'pending'
+            ORDER BY id DESC
+        """)
+        pending_accounts_for_modal = [dict(row) for row in cur.fetchall()]
+
+    return render_template(
+        "account_management.html",
+        data=data,
+        account_type=account_type,
+        pending_accounts=pending_accounts_for_modal
+    )
+
 
 @app.route("/delete/<account_type>/<int:user_id>", methods=["POST"])
 def delete_account(account_type, user_id):
-    if "username" not in session or session["role"] != "admin":
+    if "username" not in session or session.get("role") != "admin":
         return jsonify({"status": "Unauthorized"}), 403
 
     try:
@@ -639,7 +656,115 @@ def delete_account(account_type, user_id):
             conn.commit()
         return jsonify({"status": "success"})
     except Exception as e:
+        print("[DELETE ACCOUNT ERROR]", e)
         return jsonify({"status": "error"}), 500
+
+
+@app.route("/admin/accounts/create", methods=["POST"])
+def admin_create_account():
+    if "username" not in session or session.get("role") != "admin":
+        return jsonify({"success": False, "message": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    name = (data.get("name") or "").strip()
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = (data.get("role") or "user").strip().lower()
+    grade = (data.get("grade") or "").strip()
+    section = (data.get("section") or "").strip()
+
+    if not name or not username or not password:
+        return jsonify({"success": False, "message": "Name, username, and password are required."}), 400
+
+    if len(password) < 6:
+        return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+
+    if role not in ["user", "professor", "admin"]:
+        return jsonify({"success": False, "message": "Invalid role."}), 400
+
+    if role == "user" and (not grade or not section):
+        return jsonify({"success": False, "message": "Year level and section are required for student accounts."}), 400
+
+    if role == "admin":
+        grade = None
+        section = None
+    elif role == "professor":
+        grade = None
+        section = section or None
+
+    hashed_password = generate_password_hash(password)
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+
+            cur.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            if cur.fetchone():
+                return jsonify({"success": False, "message": "Username/ID already exists."}), 409
+
+            cur.execute("""
+                INSERT INTO users (username, name, password, role, status, grade, section, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                username,
+                name,
+                hashed_password,
+                role,
+                "active",
+                grade,
+                section,
+                created_at
+            ))
+            conn.commit()
+
+        return jsonify({"success": True, "message": "Account created successfully."})
+
+    except Exception as e:
+        print("[CREATE ACCOUNT ERROR]", e)
+        return jsonify({"success": False, "message": "Failed to create account."}), 500
+
+
+@app.route("/admin/accounts/reset_password", methods=["POST"])
+def admin_reset_password():
+    if "username" not in session or session.get("role") != "admin":
+        return jsonify({"success": False, "message": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    account_id = data.get("account_id")
+    new_password = data.get("new_password") or ""
+
+    if not account_id or not new_password:
+        return jsonify({"success": False, "message": "Account ID and new password are required."}), 400
+
+    if len(new_password) < 6:
+        return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+
+    try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid account ID."}), 400
+
+    hashed_password = generate_password_hash(new_password)
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+
+            cur.execute("SELECT id FROM users WHERE id = ?", (account_id,))
+            if not cur.fetchone():
+                return jsonify({"success": False, "message": "Account not found."}), 404
+
+            cur.execute("UPDATE users SET password = ? WHERE id = ?", (hashed_password, account_id))
+            conn.commit()
+
+        return jsonify({"success": True, "message": "Password reset successfully."})
+
+    except Exception as e:
+        print("[RESET PASSWORD ERROR]", e)
+        return jsonify({"success": False, "message": "Failed to reset password."}), 500
 
 @app.route("/pending_accounts")
 def pending_accounts():
