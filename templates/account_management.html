@@ -93,6 +93,105 @@
     .action-btn { padding:6px 12px; border:none; border-radius:6px; color:white; }
     .approve { background:#28a745; } .reject { background:#dc3545; }
 
+
+
+    .create-account-main-btn {
+        background:#28a745 !important;
+        color:white !important;
+    }
+
+    .reset-btn {
+        background:#17a2b8;
+        padding:6px 12px;
+        border:none;
+        border-radius:6px;
+        color:white;
+        cursor:pointer;
+        margin-right:6px;
+        font-weight:600;
+    }
+
+    .reset-btn:hover {
+        background:#117a8b;
+    }
+
+    .delete-btn:hover {
+        background:#b02a37;
+    }
+
+    .form-modal-content {
+        max-width:520px;
+    }
+
+    .account-form {
+        margin-top:15px;
+        display:flex;
+        flex-direction:column;
+        gap:12px;
+    }
+
+    .account-form label {
+        font-weight:600;
+        color:#333;
+        font-size:14px;
+        text-align:left;
+    }
+
+    .account-form input,
+    .account-form select {
+        width:100%;
+        box-sizing:border-box;
+        padding:10px;
+        border:1px solid #ccc;
+        border-radius:8px;
+        font-size:14px;
+    }
+
+    .modal-actions {
+        margin-top:18px;
+        display:flex;
+        justify-content:flex-end;
+        gap:10px;
+    }
+
+    .save-btn {
+        background:#28a745;
+        color:white;
+        border:none;
+        padding:10px 16px;
+        border-radius:8px;
+        cursor:pointer;
+        font-weight:600;
+    }
+
+    .save-btn:hover {
+        background:#218838;
+    }
+
+    .cancel-btn {
+        background:#6c757d;
+        color:white;
+        border:none;
+        padding:10px 16px;
+        border-radius:8px;
+        cursor:pointer;
+        font-weight:600;
+    }
+
+    .cancel-btn:hover {
+        background:#5a6268;
+    }
+
+    .form-note {
+        background:#f8f9fa;
+        border:1px solid #e5e5e5;
+        padding:10px;
+        border-radius:8px;
+        font-size:13px;
+        color:#555;
+        text-align:left;
+    }
+
     /* small helpers */
     .filter-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; width:100%; }
     .filter-col { display:flex; gap:6px; align-items:center; }
@@ -107,6 +206,9 @@
     <h2><i class="fas fa-users-cog"></i> Account Management</h2>
     <div class="top-buttons">
         <button onclick="location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
+        <button id="createAccountBtn" class="create-account-main-btn">
+            <i class="fas fa-user-plus"></i> Create New Account
+        </button>
         <button id="pendingBtn" class="btn-badge">
             <i class="fas fa-user-clock"></i> Pending Accounts
             <span id="pendingCount" class="badge">0</span>
@@ -206,6 +308,13 @@
     <td>{{ 'STUDENT' if user.role=='user' else user.role.upper() }}</td>
     <td>{{ user.created_at or '-' }}</td>
     <td>
+        <button class="reset-btn"
+                data-account-id="{{ user.id }}"
+                data-account-type="user"
+                data-username="{{ user.username }}"
+                onclick="openResetPasswordModal(this)">
+            Reset Password
+        </button>
         <button class="delete-btn" data-user-id="{{ user.id }}" onclick="deleteUser(this)">Delete</button>
     </td>
 </tr>
@@ -225,7 +334,7 @@
 </tr>
 </thead>
 <tbody>
-{% for admin in data %}
+{% for admin in data if admin.role == 'admin' %}
 <tr>
     <td>{{ admin.username }}</td>
     <td>{{ admin.name }}</td>
@@ -236,6 +345,13 @@
     </td>
     <td>{{ admin.created_at or '-' }}</td>
     <td>
+        <button class="reset-btn"
+                data-account-id="{{ admin.id }}"
+                data-account-type="admin"
+                data-username="{{ admin.username }}"
+                onclick="openResetPasswordModal(this)">
+            Reset Password
+        </button>
         <button class="delete-btn" data-admin-id="{{ admin.id }}" onclick="deleteAdmin(this)">Delete</button>
     </td>
 </tr>
@@ -370,6 +486,102 @@
     </div>
 </div>
 
+
+<!-- Create New Account Modal -->
+<div id="createAccountModal" class="modal">
+    <div class="modal-content form-modal-content">
+        <span class="close" id="closeCreateAccount">&times;</span>
+        <h3><i class="fas fa-user-plus"></i> Create New Account</h3>
+
+        <form id="createAccountForm" class="account-form">
+            <div>
+                <label for="newName">Full Name</label>
+                <input id="newName" name="name" type="text" placeholder="Enter full name" required>
+            </div>
+
+            <div>
+                <label for="newUsername">Username / ID Number</label>
+                <input id="newUsername" name="username" type="text" placeholder="Enter username or ID number" required>
+            </div>
+
+            <div>
+                <label for="newPassword">Password</label>
+                <input id="newPassword" name="password" type="password" placeholder="Enter password" minlength="6" required>
+            </div>
+
+            <div>
+                <label for="newConfirmPassword">Confirm Password</label>
+                <input id="newConfirmPassword" name="confirm_password" type="password" placeholder="Confirm password" minlength="6" required>
+            </div>
+
+            <div>
+                <label for="newRole">Role</label>
+                <select id="newRole" name="role" onchange="toggleCreateAccountFields()" required>
+                    <option value="user">Student</option>
+                    <option value="professor">Professor</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+
+            <div id="studentExtraFields">
+                <label for="newGrade">Year Level</label>
+                <select id="newGrade" name="grade">
+                    <option value="">Select year level</option>
+                    {% for year, suffix in [(1,'st'),(2,'nd'),(3,'rd'),(4,'th'),(5,'th')] %}
+                        <option value="{{ year }}">{{ year }}{{ suffix }} Year</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div id="sectionExtraField">
+                <label for="newSection">Section</label>
+                <input id="newSection" name="section" type="text" placeholder="Enter section">
+            </div>
+
+            <div class="form-note">
+                This creates an approved account directly from the admin side. No Pending Account approval is needed.
+            </div>
+
+            <div class="modal-actions">
+                <button type="button" class="cancel-btn" onclick="closeCreateAccountModal()">Cancel</button>
+                <button type="submit" class="save-btn">Create Account</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div id="resetPasswordModal" class="modal">
+    <div class="modal-content form-modal-content">
+        <span class="close" id="closeResetPassword">&times;</span>
+        <h3><i class="fas fa-key"></i> Reset Password</h3>
+
+        <form id="resetPasswordForm" class="account-form">
+            <input id="resetAccountId" type="hidden">
+            <input id="resetAccountType" type="hidden">
+
+            <div class="form-note">
+                Resetting password for: <b id="resetUsernameLabel">-</b>
+            </div>
+
+            <div>
+                <label for="resetNewPassword">New Password</label>
+                <input id="resetNewPassword" type="password" placeholder="Enter new password" minlength="6" required>
+            </div>
+
+            <div>
+                <label for="resetConfirmPassword">Confirm New Password</label>
+                <input id="resetConfirmPassword" type="password" placeholder="Confirm new password" minlength="6" required>
+            </div>
+
+            <div class="modal-actions">
+                <button type="button" class="cancel-btn" onclick="closeResetPasswordModal()">Cancel</button>
+                <button type="submit" class="save-btn">Save New Password</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <script>
     // Global storage for fetched profile edits & pending accounts (so filters can re-apply client-side)
     let profileEditsData = [];
@@ -384,15 +596,200 @@
     const pendingModal = document.getElementById("pendingModal");
     const pendingTableBody = document.querySelector("#pendingTable tbody");
 
+    const createAccountBtn = document.getElementById("createAccountBtn");
+    const createAccountModal = document.getElementById("createAccountModal");
+    const createAccountForm = document.getElementById("createAccountForm");
+    const resetPasswordModal = document.getElementById("resetPasswordModal");
+    const resetPasswordForm = document.getElementById("resetPasswordForm");
+
     // Open modals
     profileEditsBtn.addEventListener("click", () => {
         profileEditsModal.style.display = "block";
         loadProfileEditsPending();
     });
 
+    createAccountBtn.addEventListener("click", () => {
+        openCreateAccountModal();
+    });
+
     // Close modals
     closeProfileEdits.addEventListener("click", () => profileEditsModal.style.display = "none");
+    document.getElementById("closeCreateAccount").addEventListener("click", closeCreateAccountModal);
+    document.getElementById("closeResetPassword").addEventListener("click", closeResetPasswordModal);
     document.querySelector(".close")?.addEventListener("click", () => pendingModal.style.display = "none");
+
+
+
+    // ------------------ Create Account Modal ------------------
+    function openCreateAccountModal(){
+        createAccountForm.reset();
+        toggleCreateAccountFields();
+        createAccountModal.style.display = "block";
+    }
+
+    function closeCreateAccountModal(){
+        createAccountModal.style.display = "none";
+        createAccountForm.reset();
+    }
+
+    function toggleCreateAccountFields(){
+        const role = document.getElementById("newRole").value;
+        const gradeBox = document.getElementById("studentExtraFields");
+        const sectionBox = document.getElementById("sectionExtraField");
+        const gradeInput = document.getElementById("newGrade");
+        const sectionInput = document.getElementById("newSection");
+
+        if(role === "user"){
+            gradeBox.style.display = "block";
+            sectionBox.style.display = "block";
+            gradeInput.required = true;
+            sectionInput.required = true;
+        } else if(role === "professor"){
+            gradeBox.style.display = "none";
+            sectionBox.style.display = "block";
+            gradeInput.required = false;
+            gradeInput.value = "";
+            sectionInput.required = false;
+        } else {
+            gradeBox.style.display = "none";
+            sectionBox.style.display = "none";
+            gradeInput.required = false;
+            sectionInput.required = false;
+            gradeInput.value = "";
+            sectionInput.value = "";
+        }
+    }
+
+    createAccountForm.addEventListener("submit", function(e){
+        e.preventDefault();
+
+        const name = document.getElementById("newName").value.trim();
+        const username = document.getElementById("newUsername").value.trim();
+        const password = document.getElementById("newPassword").value;
+        const confirmPassword = document.getElementById("newConfirmPassword").value;
+        const role = document.getElementById("newRole").value;
+        const grade = document.getElementById("newGrade").value;
+        const section = document.getElementById("newSection").value.trim();
+
+        if(!name || !username || !password || !confirmPassword){
+            alert("Please complete all required fields.");
+            return;
+        }
+
+        if(password.length < 6){
+            alert("Password must be at least 6 characters.");
+            return;
+        }
+
+        if(password !== confirmPassword){
+            alert("Password and Confirm Password do not match.");
+            return;
+        }
+
+        if(role === "user" && (!grade || !section)){
+            alert("Year level and section are required for student accounts.");
+            return;
+        }
+
+        fetch("/admin/accounts/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                name: name,
+                username: username,
+                password: password,
+                role: role,
+                grade: grade,
+                section: section
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(!data.success){
+                alert(data.message || "Failed to create account.");
+                return;
+            }
+
+            alert(data.message || "Account created successfully.");
+            closeCreateAccountModal();
+            location.reload();
+        })
+        .catch(err => {
+            console.error(err);
+            alert("An error occurred while creating the account.");
+        });
+    });
+
+    // ------------------ Reset Password Modal ------------------
+    function openResetPasswordModal(button){
+        const accountId = button.dataset.accountId;
+        const accountType = button.dataset.accountType;
+        const username = button.dataset.username;
+
+        document.getElementById("resetAccountId").value = accountId;
+        document.getElementById("resetAccountType").value = accountType;
+        document.getElementById("resetUsernameLabel").innerText = username;
+        document.getElementById("resetNewPassword").value = "";
+        document.getElementById("resetConfirmPassword").value = "";
+
+        resetPasswordModal.style.display = "block";
+    }
+
+    function closeResetPasswordModal(){
+        resetPasswordModal.style.display = "none";
+        resetPasswordForm.reset();
+    }
+
+    resetPasswordForm.addEventListener("submit", function(e){
+        e.preventDefault();
+
+        const accountId = document.getElementById("resetAccountId").value;
+        const accountType = document.getElementById("resetAccountType").value;
+        const newPassword = document.getElementById("resetNewPassword").value;
+        const confirmPassword = document.getElementById("resetConfirmPassword").value;
+
+        if(!newPassword || !confirmPassword){
+            alert("Please enter and confirm the new password.");
+            return;
+        }
+
+        if(newPassword.length < 6){
+            alert("Password must be at least 6 characters.");
+            return;
+        }
+
+        if(newPassword !== confirmPassword){
+            alert("New Password and Confirm Password do not match.");
+            return;
+        }
+
+        if(!confirm("Reset password for this account?")) return;
+
+        fetch("/admin/accounts/reset_password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                account_id: accountId,
+                account_type: accountType,
+                new_password: newPassword
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(!data.success){
+                alert(data.message || "Failed to reset password.");
+                return;
+            }
+
+            alert(data.message || "Password reset successfully.");
+            closeResetPasswordModal();
+            location.reload();
+        })
+        .catch(err => {
+            console.error(err);
+            alert("An error occurred while resetting the password.");
+        });
+    });
 
     // Fetch pending profile edits
     function loadProfileEditsPending(){
@@ -773,6 +1170,8 @@
     // ------------------ Event wiring ------------------
     function attachEventListeners(){
         document.querySelectorAll(".toggle-pass").forEach(btn => {
+            if(btn.dataset.listenerAttached === "1") return;
+            btn.dataset.listenerAttached = "1";
             btn.addEventListener("click", function(){
                 const masked = this.parentElement.querySelector(".masked-password");
                 const real = this.parentElement.querySelector(".real-password");
