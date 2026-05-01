@@ -388,9 +388,9 @@ def register_device(token):
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             comlab_id = int(location)
 
-            # For Render, do not use socket.gethostname() as identity.
-            # Use PC tag as stable identity.
-            hostname = tag
+            # Store actual hostname for local automatic scanner.
+            # PC tag is still stored separately in tag.
+            hostname = socket.gethostname()
 
             # IP is reference only.
             ip_addr = get_client_ip()
@@ -901,72 +901,306 @@ def api_add_peripheral():
     })
 
 
+# ============================================================
+# DEVICE CLEANUP HELPERS
+# Fixes stale faulty/replaced/missing status after Remove/Add.
+# ============================================================
+
+def cleanup_peripheral_runtime_records(
+    cur,
+    lab_id,
+    pc_tag,
+    unique_id=None,
+    serial_number=None,
+    device_type=None,
+    delete_same_type_detected=False
+):
+    """
+    Removes old runtime status data for a peripheral.
+
+    Why needed:
+    - Remove button must remove old device logic too.
+    - Adding a new device must not inherit old faulty/replaced/missing logs.
+    - detected_devices may keep old same-type USB IDs, causing false replaced.
+    """
+    ids = []
+
+    for value in [unique_id, serial_number]:
+        if value and str(value).strip() and str(value).strip() not in ids:
+            ids.append(str(value).strip())
+
+    # Exact cleanup by old unique/serial id.
+    if ids:
+        placeholders = ",".join(["?"] * len(ids))
+
+        cur.execute(f"""
+            DELETE FROM peripheral_logs
+            WHERE device_name = ?
+              AND unique_id IN ({placeholders})
+        """, [pc_tag] + ids)
+
+        cur.execute(f"""
+            UPDATE peripheral_alerts
+            SET deleted = 1
+            WHERE device_name = ?
+              AND CAST(location AS TEXT) = CAST(? AS TEXT)
+              AND serial_number IN ({placeholders})
+        """, [pc_tag, str(lab_id)] + ids)
+
+        cur.execute(f"""
+            DELETE FROM detected_devices
+            WHERE pc_tag = ?
+              AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+              AND (
+                    unique_id IN ({placeholders})
+                    OR serial_number IN ({placeholders})
+                  )
+        """, [pc_tag, str(lab_id)] + ids + ids)
+
+    # Same-type cleanup prevents false replaced after adding a new device.
+    if delete_same_type_detected and device_type:
+        candidates = embedded_device_type_candidates(device_type)
+        lower_candidates = [str(c).lower() for c in candidates if c]
+
+        if lower_candidates:
+            placeholders = ",".join(["?"] * len(lower_candidates))
+
+            # Remove stale detected devices of same type for this PC.
+            # This matters because browsers/Windows can keep old authorized/detected devices.
+            if ids:
+                id_placeholders = ",".join(["?"] * len(ids))
+
+                cur.execute(f"""
+                    DELETE FROM detected_devices
+                    WHERE pc_tag = ?
+                      AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                      AND LOWER(device_type) IN ({placeholders})
+                      AND unique_id NOT IN ({id_placeholders})
+                      AND serial_number NOT IN ({id_placeholders})
+                """, [pc_tag, str(lab_id)] + lower_candidates + ids + ids)
+            else:
+                cur.execute(f"""
+                    DELETE FROM detected_devices
+                    WHERE pc_tag = ?
+                      AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                      AND LOWER(device_type) IN ({placeholders})
+                """, [pc_tag, str(lab_id)] + lower_candidates)
+
+            # Hide old same-type alerts.
+            cur.execute(f"""
+                UPDATE peripheral_alerts
+                SET deleted = 1
+                WHERE device_name = ?
+                  AND CAST(location AS TEXT) = CAST(? AS TEXT)
+                  AND LOWER(device_type) IN ({placeholders})
+                  AND alert_type IN ('faulty', 'replaced', 'missing')
+            """, [pc_tag, str(lab_id)] + lower_candidates)
+
+
+def reset_new_peripheral_status(cur, peripheral_id):
+    """
+    New or re-added peripheral should start clean.
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cur.execute("""
+        UPDATE peripherals
+        SET status = 'connected',
+            disconnected_at = NULL,
+            status_updated_at = ?,
+            remarks = COALESCE(remarks, '')
+        WHERE id = ?
+    """, (now, peripheral_id))
+
 @app.route("/api/delete_peripheral", methods=["POST"])
-def api_delete_peripheral():
-    data = request.get_json()
+def delete_peripheral():
+    """
+    Remove peripheral and its runtime logic/history.
+
+    This fixes:
+    - old faulty still affecting a newly added device
+    - old replaced alert showing after removal
+    - stale detected_devices causing false replaced
+    """
+    data = request.get_json(silent=True) or {}
     pid = data.get("id")
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    if not pid:
+        return jsonify({"success": False, "message": "Missing peripheral id."}), 400
 
-    c.execute("DELETE FROM peripherals WHERE id = ?", (pid,))
-    conn.commit()
-    conn.close()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
 
-    return jsonify({"success": True})
+            cur.execute("""
+                SELECT name, serial_number, unique_id, assigned_pc, lab_id
+                FROM peripherals
+                WHERE id = ?
+                LIMIT 1
+            """, (pid,))
+            row = cur.fetchone()
+
+            if not row:
+                return jsonify({"success": False, "message": "Peripheral not found."}), 404
+
+            name, serial_number, unique_id, pc_tag, lab_id = row
+
+            cleanup_peripheral_runtime_records(
+                cur,
+                lab_id=lab_id,
+                pc_tag=pc_tag,
+                unique_id=unique_id,
+                serial_number=serial_number,
+                device_type=name,
+                delete_same_type_detected=True
+            )
+
+            cur.execute("DELETE FROM peripherals WHERE id = ?", (pid,))
+            conn.commit()
+
+        return jsonify({"success": True, "message": "Peripheral removed completely."})
+
+    except Exception as e:
+        print("[DELETE PERIPHERAL ERROR]", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 @app.route("/comlab/<int:comlab_id>/add_peripheral", methods=["POST"])
 def add_peripheral(comlab_id):
-    data = request.get_json()
-    pc_tag = data.get("pc_tag")
-    name = data.get("name")
-    brand = data.get("brand")
-    unique_id = data.get("unique_id")
-    remarks = data.get("remarks")
-    serial = data.get("serial_number")
-    if not all([pc_tag, name, brand, serial]):
+    """
+    Manual add peripheral.
+
+    Important:
+    - clears old same-type detected device data for this PC
+    - clears old logs/alerts for the same unique_id/serial
+    - starts the new device as clean connected
+    """
+    ensure_detected_devices_table()
+    ensure_peripheral_status_columns()
+
+    data = request.get_json(silent=True) or {}
+
+    pc_tag = str(data.get("pc_tag") or "").strip()
+    name = normalize_scanned_device_type(data.get("name") or data.get("device_type"))
+    brand = str(data.get("brand") or "Unknown").strip()
+    unique_id = str(data.get("unique_id") or data.get("serial_number") or "").strip()
+    serial = str(data.get("serial_number") or unique_id).strip()
+    remarks = str(data.get("remarks") or "").strip()
+
+    if not pc_tag or not name or name == "Unknown" or not brand or not serial:
         return jsonify({"success": False, "message": "Missing fields"}), 400
 
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
 
-    # devices table uses "location", not comlab_id
-    cur.execute("SELECT id FROM devices WHERE tag = ? AND location = ?", (pc_tag, str(comlab_id)))
-    device = cur.fetchone()
-    if not device:
-        conn.close()
-        return jsonify({"success": False, "message": f"PC '{pc_tag}' not found in this ComLab"}), 404
-    cur.execute("""
+            cur.execute("""
+                SELECT id
+                FROM devices
+                WHERE tag = ?
+                  AND (location = ? OR comlab_id = ?)
+                LIMIT 1
+            """, (pc_tag, str(comlab_id), comlab_id))
+
+            device = cur.fetchone()
+
+            if not device:
+                return jsonify({"success": False, "message": f"PC '{pc_tag}' not found in this ComLab"}), 404
+
+            candidates = embedded_device_type_candidates(name)
+            placeholders = ",".join(["LOWER(?)"] * len(candidates))
+
+            cur.execute(f"""
                 SELECT id
                 FROM peripherals
                 WHERE assigned_pc = ?
-                  AND name = ?
-                """, (pc_tag, name))
-    existing = cur.fetchone()
-    if existing:
-        conn.close()
-        return jsonify({"success": False, "message": f"{name} already exists for {pc_tag}"}), 400
-    # Insert peripheral
-    cur.execute("""
-        INSERT INTO peripherals (name, brand,unique_id, serial_number, status, remarks, lab_id, assigned_pc)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (name, brand,unique_id, serial, 'connected','', str(comlab_id), pc_tag))
-    conn.commit()
-    peripheral_id = cur.lastrowid
-    conn.close()
+                  AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                  AND LOWER(name) IN ({placeholders})
+                LIMIT 1
+            """, [pc_tag, str(comlab_id)] + [c.lower() for c in candidates])
 
-    return jsonify({
-        "success": True,
-        "peripheral": {
-            "id": peripheral_id,
-            "name": name,
-            "brand": brand,
-            "unique_id": unique_id,
-            "serial_number": serial,
-            "status": 'connected',
-            "remarks": ''
-        }
-    })
+            existing = cur.fetchone()
+
+            if existing:
+                return jsonify({"success": False, "message": f"{name} already exists for {pc_tag}"}), 400
+
+            cleanup_peripheral_runtime_records(
+                cur,
+                lab_id=str(comlab_id),
+                pc_tag=pc_tag,
+                unique_id=unique_id,
+                serial_number=serial,
+                device_type=name,
+                delete_same_type_detected=True
+            )
+
+            cur.execute("""
+                INSERT INTO peripherals
+                (name, brand, unique_id, serial_number, status, remarks, lab_id, assigned_pc)
+                VALUES (?, ?, ?, ?, 'connected', ?, ?, ?)
+            """, (
+                name,
+                brand,
+                unique_id or serial,
+                serial,
+                remarks,
+                str(comlab_id),
+                pc_tag
+            ))
+
+            peripheral_id = cur.lastrowid
+            reset_new_peripheral_status(cur, peripheral_id)
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute("""
+                INSERT INTO detected_devices
+                (lab_id, pc_tag, unique_id, name, device_type, vendor, product, serial_number, status, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+                ON CONFLICT(lab_id, pc_tag, unique_id)
+                DO UPDATE SET
+                    name = excluded.name,
+                    device_type = excluded.device_type,
+                    vendor = excluded.vendor,
+                    product = excluded.product,
+                    serial_number = excluded.serial_number,
+                    status = 'connected',
+                    last_seen = excluded.last_seen
+            """, (
+                str(comlab_id),
+                pc_tag,
+                unique_id or serial,
+                name,
+                name,
+                brand,
+                brand,
+                serial,
+                now
+            ))
+
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "peripheral": {
+                "id": peripheral_id,
+                "name": name,
+                "brand": brand,
+                "unique_id": unique_id or serial,
+                "serial_number": serial,
+                "status": "connected",
+                "remarks": remarks,
+                "assigned_pc": pc_tag,
+                "lab_id": str(comlab_id)
+            }
+        })
+
+    except Exception as e:
+        print("[ADD PERIPHERAL ERROR]", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/edit_peripheral", methods=["POST"])
 
 @app.route("/api/edit_peripheral", methods=["POST"])
 def api_edit_peripheral():
@@ -997,21 +1231,7 @@ def api_edit_peripheral():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route("/api/delete_peripheral", methods=["POST"])
-def delete_peripheral():
-    data = request.get_json()
-    pid = data.get("id")
-
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM peripherals WHERE id = ?", (pid,))
-            conn.commit()
-
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
-
+UPLOAD_FOLDER = "static/uploads"
 UPLOAD_FOLDER = "static/uploads"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
@@ -1236,227 +1456,62 @@ def reject_edit(edit_id):
         conn.commit()
     return redirect(url_for("account_management"))
 
-@app.route("/api/usb_event", methods=['POST'])
+
+@app.route("/api/usb_event", methods=["POST"])
 def usb_event():
-    from datetime import datetime
-    data = request.get_json()
+    """
+    External USB event endpoint.
+    Fixed:
+    - Registered device disconnected becomes unplugged first, not missing immediately.
+    - Same registered device plugged back becomes connected.
+    - Same type but different ID becomes replaced and appears in View Alerts.
+    """
+    data = request.get_json(silent=True) or {}
+
+    event_type = str(data.get("event_type") or "").strip().lower()
+    device_type = normalize_scanned_device_type(data.get("device_type") or data.get("name"))
+    unique_id = str(data.get("unique_id") or data.get("serial_number") or "").strip()
+    device_name = str(data.get("device_name") or data.get("pc_tag") or "").strip()
+    location = str(data.get("location") or data.get("lab_id") or "").strip()
+    vendor = str(data.get("vendor") or "Unknown").strip()
+    product = str(data.get("product") or "Unknown").strip()
+
+    if event_type not in ["connected", "disconnected"]:
+        return jsonify({"status": "error", "message": "event_type must be connected or disconnected"}), 400
+
+    if not unique_id or not device_name or not location:
+        return jsonify({"status": "error", "message": "unique_id, device_name/pc_tag, and location/lab_id are required"}), 400
 
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cur  = conn.cursor()
+        ensure_detected_devices_table()
+        ensure_peripheral_status_columns()
 
-        timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        event_type  = data['event_type']     # "connected" or "disconnected"
-        device_type = data['device_type']    # e.g. "Mouse"
-        unique_id   = data['unique_id']      # serial/unique id of the actual plugged device
-        device_name = data['device_name']    # pc_tag  e.g. "PC-Win33"
-        location    = data['location']       # lab_id  e.g. "1"
-        user_id     = data.get('user_id', '')
-        vendor      = data.get('vendor', '')
-        product     = data.get('product', '')
-        username    = data.get('username', '')
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
 
-        alert_type = None
+            device = {
+                "unique_id": unique_id,
+                "serial_number": unique_id,
+                "device_type": device_type,
+                "name": device_type,
+                "vendor": vendor,
+                "product": product
+            }
 
-        # ── 1. Log raw USB event ──────────────────────────────────────────
-        cur.execute("""
-            INSERT INTO usb_devices
-            (event_type, device_type, vendor, product, unique_id,
-             username, timestamp, pc_tag, user_id, device_name, location)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            event_type, device_type, vendor, product, unique_id,
-            username, timestamp, device_name, user_id, device_name, location
-        ))
+            if event_type == "connected":
+                embedded_process_connected_event(cur, location, device_name, device)
+            else:
+                embedded_process_disconnected_event(cur, location, device_name, device)
 
-        # ── 2. Log to peripheral_logs (used for cycle / missing detection) ─
-        cur.execute("""
-            INSERT INTO peripheral_logs
-            (unique_id, event_type, device_type, timestamp, device_name)
-            VALUES (?, ?, ?, ?, ?)
-        """, (unique_id, event_type, device_type, timestamp, device_name))
+            embedded_check_missing_devices(cur, location, device_name)
+            conn.commit()
 
-        # ── 3. Look up the registered peripheral for this pc + device type ─
-        #       Match by device type name AND pc AND lab.
-        #       We do NOT match by serial here — we need the registered row
-        #       regardless of which physical unit is plugged in.
-        cur.execute("""
-            SELECT id, serial_number, unique_id AS reg_unique
-            FROM peripherals
-            WHERE LOWER(name)    = LOWER(?)
-              AND assigned_pc    = ?
-              AND lab_id         = ?
-            LIMIT 1
-        """, (device_type, device_name, location))
-        registered = cur.fetchone()
+        return jsonify({"status": "success"}), 200
 
-        # ── 4. CONNECTED logic ────────────────────────────────────────────
-        if event_type == "connected":
-            if registered:
-                reg_id, reg_serial, reg_unique = registered
-                # Use whichever field is filled as the "known" id
-                known_id = reg_serial or reg_unique
-
-                if known_id == unique_id:
-                    # Same device plugged back in → connected
-                    cur.execute(
-                        "UPDATE peripherals SET status = 'connected' WHERE id = ?",
-                        (reg_id,)
-                    )
-                else:
-                    # Different serial plugged in → replaced
-                    cur.execute(
-                        "UPDATE peripherals SET status = 'replaced' WHERE id = ?",
-                        (reg_id,)
-                    )
-                    alert_type = "replaced"
-                    # Only insert alert if none exists yet for this device
-                    cur.execute("""
-                        SELECT id FROM peripheral_alerts
-                        WHERE serial_number = ? AND alert_type = 'replaced' AND deleted = 0
-                        LIMIT 1
-                    """, (unique_id,))
-                    if not cur.fetchone():
-                        cur.execute("""
-                            INSERT INTO peripheral_alerts
-                            (serial_number, alert_type, timestamp, device_name,
-                             location, event_type, device_type, user_id)
-                            VALUES (?, 'replaced', ?, ?, ?, ?, ?, ?)
-                        """, (unique_id, timestamp, device_name, location,
-                              event_type, device_type, user_id))
-
-            # ── Faulty check: rapid plug/unplug cycles in last 10 min ─────
-            cur.execute("""
-                SELECT event_type FROM peripheral_logs
-                WHERE unique_id = ?
-                  AND datetime(timestamp) >= datetime('now', '-10 minutes')
-                ORDER BY datetime(timestamp) ASC
-            """, (unique_id,))
-            events = [r[0] for r in cur.fetchall()]
-            cycle_count = sum(
-                1 for i in range(len(events) - 1)
-                if events[i] == "connected" and events[i + 1] == "disconnected"
-            )
-
-            if cycle_count >= 3:
-                if registered:
-                    cur.execute(
-                        "UPDATE peripherals SET status = 'faulty' WHERE id = ?",
-                        (registered[0],)
-                    )
-                alert_type = "faulty"
-                cur.execute("""
-                    SELECT id FROM peripheral_alerts
-                    WHERE serial_number = ? AND alert_type = 'faulty' AND deleted = 0
-                    LIMIT 1
-                """, (unique_id,))
-                if not cur.fetchone():
-                    cur.execute("""
-                        INSERT INTO peripheral_alerts
-                        (serial_number, alert_type, timestamp, device_name,
-                         location, event_type, device_type, user_id)
-                        VALUES (?, 'faulty', ?, ?, ?, ?, ?, ?)
-                    """, (unique_id, timestamp, device_name, location,
-                          event_type, device_type, user_id))
-
-        # ── 5. DISCONNECTED logic ─────────────────────────────────────────
-        elif event_type == "disconnected":
-            if registered:
-                reg_id, reg_serial, reg_unique = registered
-                known_id = reg_serial or reg_unique
-
-                # Mark unplugged using the row id — safe regardless of serial
-                cur.execute(
-                    "UPDATE peripherals SET status = 'unplugged' WHERE id = ?",
-                    (reg_id,)
-                )
-
-                # Faulty check on disconnect side too
-                cur.execute("""
-                    SELECT event_type FROM peripheral_logs
-                    WHERE unique_id = ?
-                      AND datetime(timestamp) >= datetime('now', '-10 minutes')
-                    ORDER BY datetime(timestamp) ASC
-                """, (known_id,))
-                events = [r[0] for r in cur.fetchall()]
-                cycle_count = sum(
-                    1 for i in range(len(events) - 1)
-                    if events[i] == "connected" and events[i + 1] == "disconnected"
-                )
-                if cycle_count >= 3:
-                    cur.execute(
-                        "UPDATE peripherals SET status = 'faulty' WHERE id = ?",
-                        (reg_id,)
-                    )
-                    alert_type = "faulty"
-                    cur.execute("""
-                        SELECT id FROM peripheral_alerts
-                        WHERE serial_number = ? AND alert_type = 'faulty' AND deleted = 0
-                        LIMIT 1
-                    """, (known_id,))
-                    if not cur.fetchone():
-                        cur.execute("""
-                            INSERT INTO peripheral_alerts
-                            (serial_number, alert_type, timestamp, device_name,
-                             location, event_type, device_type, user_id)
-                            VALUES (?, 'faulty', ?, ?, ?, ?, ?, ?)
-                        """, (known_id, timestamp, device_name, location,
-                              event_type, device_type, user_id))
-
-            # ── Missing check ─────────────────────────────────────────────
-            # Only check on disconnect. Get the PREVIOUS disconnect timestamp
-            # (not the one we just inserted — skip it with OFFSET 1).
-            cur.execute("""
-                SELECT timestamp FROM peripheral_logs
-                WHERE unique_id  = ?
-                  AND event_type = 'disconnected'
-                ORDER BY datetime(timestamp) DESC
-                LIMIT 1 OFFSET 1
-            """, (unique_id,))
-            prev_unplug = cur.fetchone()
-
-            if prev_unplug:
-                try:
-                    prev_time = datetime.strptime(prev_unplug[0], "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    try:
-                        prev_time = datetime.strptime(prev_unplug[0], "%Y-%m-%d %H:%M:%S.%f")
-                    except Exception:
-                        prev_time = None
-
-                if prev_time:
-                    elapsed = (datetime.now() - prev_time).total_seconds()
-                    if elapsed >= 600:   # 10 minutes
-                        if registered:
-                            cur.execute(
-                                "UPDATE peripherals SET status = 'missing' WHERE id = ?",
-                                (registered[0],)
-                            )
-                        alert_type = "missing"
-                        cur.execute("""
-                            SELECT id FROM peripheral_alerts
-                            WHERE serial_number = ? AND alert_type = 'missing' AND deleted = 0
-                            LIMIT 1
-                        """, (unique_id,))
-                        if not cur.fetchone():
-                            cur.execute("""
-                                INSERT INTO peripheral_alerts
-                                (serial_number, alert_type, timestamp, device_name,
-                                 location, event_type, device_type, user_id)
-                                VALUES (?, 'missing', ?, ?, ?, ?, ?, ?)
-                            """, (unique_id, timestamp, device_name, location,
-                                  event_type, device_type, user_id))
-
-        conn.commit()
-        conn.close()
-
-        return jsonify({"status": "success", "alert": alert_type}), 200
-
-    except sqlite3.Error as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
     except Exception as e:
+        print("[USB EVENT ERROR]", e)
         return jsonify({"status": "error", "message": str(e)}), 500
-    
+
 @app.route("/comlab/<int:comlab_id>/inventory/display_usb_devices")
 def display_usb_devices(comlab_id):
     try:
@@ -1477,96 +1532,67 @@ def display_usb_devices(comlab_id):
     except sqlite3.Error as e:
         return f"<h1>Database Error:</h1><p>{str(e)}</p>", 500
 
+
 @app.route("/comlab/<int:comlab_id>/inventory/view_alerts")
 def view_alerts(comlab_id):
     try:
         conn = sqlite3.connect(DB_FILE)
         cur = conn.cursor()
-        cur.execute("""SELECT B.unique_id,A.* FROM peripheral_alerts A INNER JOIN peripherals B 
-                    ON A.serial_number = B.serial_number 
-                    WHERE A.location = ? AND A.deleted = 0 ORDER BY timestamp DESC""", (comlab_id,))
+        cur.execute("""
+            SELECT
+                COALESCE(B.unique_id, A.serial_number) AS unique_id,
+                A.*
+            FROM peripheral_alerts A
+            LEFT JOIN peripherals B
+                ON A.location = B.lab_id
+               AND A.device_name = B.assigned_pc
+               AND (
+                    A.serial_number = B.serial_number
+                    OR A.serial_number = B.unique_id
+               )
+            WHERE A.location = ?
+              AND A.deleted = 0
+            ORDER BY datetime(A.timestamp) DESC, A.id DESC
+        """, (str(comlab_id),))
         devices = cur.fetchall()
+        column_names = [description[0] for description in cur.description]
         conn.close()
 
-        devices_list = []
-        column_names = [description[0] for description in cur.description]
-        for device in devices:
-            device_dict = dict(zip(column_names, device))
-            devices_list.append(device_dict)
+        devices_list = [dict(zip(column_names, device)) for device in devices]
 
         return render_template("view_alerts.html", devices=devices_list, comlab_id=comlab_id)
 
     except sqlite3.Error as e:
         return f"<h1>Database Error:</h1><p>{str(e)}</p>", 500
 
-@app.route("/alerts/stream")
+@app.route('/alerts/stream')
 def alerts_stream():
-    import json
-
     def event_stream():
         last_id = 0
 
         while True:
-            try:
-                with sqlite3.connect(DB_FILE) as conn:
-                    conn.row_factory = sqlite3.Row
-                    cur = conn.cursor()
+            conn = sqlite3.connect('database.db')
+            cur = conn.cursor()
 
-                    cur.execute("""
-                        SELECT
-                            a.id,
-                            a.alert_type,
-                            a.location,
-                            a.device_name,
-                            a.device_type,
-                            a.user_id,
-                            a.timestamp,
-                            COALESCE(
-                                NULLIF(u.name, ''),
-                                NULLIF(s.student_name, ''),
-                                NULLIF(a.user_id, ''),
-                                'Unknown User'
-                            ) AS student_name
-                        FROM peripheral_alerts a
-                        LEFT JOIN users u
-                            ON u.username = a.user_id
-                        LEFT JOIN active_sessions s
-                            ON s.pc_tag = a.device_name
-                        WHERE a.id > ?
-                          AND a.deleted = 0
-                        ORDER BY a.id ASC
-                    """, (last_id,))
+            cur.execute("""
+                SELECT id, location, serial_number, alert_type
+                FROM peripheral_alerts
+                WHERE id > ? AND deleted = 0
+                ORDER BY id ASC
+            """, (last_id,))
 
-                    rows = cur.fetchall()
+            rows = cur.fetchall()
+            conn.close()
 
-                    for row in rows:
-                        last_id = row["id"]
+            for row in rows:
+                alert_id, location, serial_number, alert_type = row
+                last_id = alert_id
 
-                        payload = {
-                            "id": row["id"],
-                            "alert_type": row["alert_type"] or "unknown",
-                            "comlab_id": row["location"] or "Unknown",
-                            "pc": row["device_name"] or "Unknown PC",
-                            "device": row["device_type"] or "Unknown Device",
-                            "user": row["student_name"] or "Unknown User",
-                            "timestamp": row["timestamp"] or ""
-                        }
-
-                        yield f"data: {json.dumps(payload)}\n\n"
-
-            except Exception as e:
-                print("[ALERT STREAM ERROR]", e)
+                yield f"data: {location}|{serial_number}|{alert_type}\n\n"
 
             time.sleep(2)
 
-    return Response(
-        event_stream(),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    return Response(event_stream(), mimetype='text/event-stream')
 
 @app.route("/comlab/<int:comlab_id>/inventory/summary")
 def summary(comlab_id):
@@ -2013,8 +2039,14 @@ import subprocess
 import threading
 
 EMBEDDED_AGENT_INTERVAL_SECONDS = 1
-FAULTY_RECONNECT_COUNT = 15
+FAULTY_RECONNECT_COUNT = 3
 MISSING_THRESHOLD_SECONDS = 60
+
+# Local scanner settings.
+# The background scanner uses this target so status can update automatically
+# without pressing the Scan button again.
+SCANNER_TARGET_FILE = "scanner_target.json"
+DEVICE_SCAN_LOCK = threading.Lock()
 
 ALLOWED_EMBEDDED_DEVICE_TYPES = {
     "Mouse",
@@ -2025,6 +2057,49 @@ ALLOWED_EMBEDDED_DEVICE_TYPES = {
     "Monitor"
 }
 
+
+def remember_scanner_target(lab_id, pc_tag):
+    """
+    Saves which PC this local app.py should monitor automatically.
+
+    This is needed because the background thread has no browser request,
+    no session, and no cookie. Once this is saved, the scanner can keep
+    updating connected/unplugged/replaced/missing/faulty without pressing Scan.
+    """
+    try:
+        data = {
+            "lab_id": str(lab_id),
+            "pc_tag": str(pc_tag),
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(SCANNER_TARGET_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        print(f"[SCANNER TARGET] Saved Lab {lab_id} | {pc_tag}")
+    except Exception as e:
+        print("[SCANNER TARGET SAVE ERROR]", e)
+
+
+def load_scanner_target():
+    """
+    Loads the PC target for automatic background scanning.
+    """
+    try:
+        if not os.path.exists(SCANNER_TARGET_FILE):
+            return None, None
+
+        with open(SCANNER_TARGET_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        lab_id = str(data.get("lab_id") or "").strip()
+        pc_tag = str(data.get("pc_tag") or "").strip()
+
+        if lab_id and pc_tag:
+            return lab_id, pc_tag
+
+    except Exception as e:
+        print("[SCANNER TARGET LOAD ERROR]", e)
+
+    return None, None
 
 def ensure_detected_devices_table():
     """
@@ -2059,6 +2134,29 @@ def ensure_detected_devices_table():
 
     except Exception as e:
         print("[EMBEDDED TABLE ERROR]", e)
+
+
+
+def ensure_peripheral_status_columns():
+    """
+    Adds status timestamp columns used by the fixed unplugged/missing logic.
+    disconnected_at prevents old peripheral_logs from making a device missing immediately.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(peripherals)")
+            columns = [row[1] for row in cur.fetchall()]
+
+            if "disconnected_at" not in columns:
+                cur.execute("ALTER TABLE peripherals ADD COLUMN disconnected_at TEXT")
+
+            if "status_updated_at" not in columns:
+                cur.execute("ALTER TABLE peripherals ADD COLUMN status_updated_at TEXT")
+
+            conn.commit()
+    except Exception as e:
+        print("[DB MIGRATION ERROR - peripheral status columns]", e)
 
 
 def normalize_scanned_device_type(device_type):
@@ -2392,29 +2490,44 @@ def embedded_get_connected_devices():
 
 def embedded_identify_current_pc():
     """
-    Finds current PC for the embedded/local scanner.
+    Finds which PC this app.py should monitor.
+
     Priority:
-    1. session pc_tag if available
-    2. registered browser cookie if available
-    3. hostname fallback for local-only deployment
+    1. Environment variables COMLAB_ID and COMLAB_PC_TAG.
+    2. scanner_target.json saved by /api/scan_devices or /api/webusb_sync.
+    3. Registered browser cookie when called inside a request.
+    4. Windows hostname lookup in devices table.
+    5. If there is only one PC in devices table, use it as fallback.
 
-    Note: Render cannot scan a client PC's USB devices.
-    Use local DetectionAgent for deployed multi-PC setup.
+    The important fix is #2:
+    the background scanner cannot read the browser session/cookie,
+    so it must remember the selected PC outside the request.
     """
-    try:
-        session_pc_tag = session.get("pc_tag") if request else None
-    except Exception:
-        session_pc_tag = None
+    # 1. Manual environment config.
+    env_lab_id = str(os.environ.get("COMLAB_ID") or "").strip()
+    env_pc_tag = str(os.environ.get("COMLAB_PC_TAG") or os.environ.get("PC_TAG") or "").strip()
 
+    if env_lab_id and env_pc_tag:
+        return env_lab_id, env_pc_tag
+
+    # 2. Last selected scanner target.
+    target_lab_id, target_pc_tag = load_scanner_target()
+    if target_lab_id and target_pc_tag:
+        return target_lab_id, target_pc_tag
+
+    # 3. Request/browser cookie, only works inside request context.
     try:
         registered_pc = resolve_registered_pc_from_cookie()
         if registered_pc:
             lab_id = registered_pc["comlab_id"] if registered_pc["comlab_id"] else registered_pc["location"]
-            return str(lab_id), registered_pc["tag"]
+            pc_tag = registered_pc["tag"]
+            remember_scanner_target(lab_id, pc_tag)
+            return str(lab_id), pc_tag
     except Exception:
         pass
 
-    hostname = session_pc_tag or socket.gethostname()
+    # 4. Hostname fallback for local deployment.
+    hostname = socket.gethostname()
 
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -2430,22 +2543,38 @@ def embedded_identify_current_pc():
         """, (hostname, hostname))
 
         row = cur.fetchone()
+
+        if row:
+            conn.close()
+            lab_id = row["comlab_id"] if row["comlab_id"] else row["location"]
+            pc_tag = row["tag"]
+            remember_scanner_target(lab_id, pc_tag)
+            return str(lab_id), pc_tag
+
+        # 5. Single-PC fallback.
+        # This is useful for testing when only one PC is registered.
+        cur.execute("""
+            SELECT id, tag, location, comlab_id, hostname
+            FROM devices
+            ORDER BY id ASC
+            LIMIT 2
+        """)
+        rows = cur.fetchall()
         conn.close()
 
-        if not row:
-            print(f"[EMBEDDED AGENT] PC not registered in devices table: {hostname}")
-            return None, None
+        if len(rows) == 1:
+            row = rows[0]
+            lab_id = row["comlab_id"] if row["comlab_id"] else row["location"]
+            pc_tag = row["tag"]
+            remember_scanner_target(lab_id, pc_tag)
+            return str(lab_id), pc_tag
 
-        lab_id = row["comlab_id"] if row["comlab_id"] else row["location"]
-        pc_tag = row["tag"]
-
-        return str(lab_id), pc_tag
+        print(f"[EMBEDDED AGENT] PC not identified. Hostname={hostname}. Click Scan once or set COMLAB_ID and COMLAB_PC_TAG.")
+        return None, None
 
     except Exception as e:
         print("[EMBEDDED IDENTIFY ERROR]", e)
         return None, None
-
-
 
 def embedded_get_active_user(cur, pc_tag):
     cur.execute("""
@@ -2463,21 +2592,35 @@ def embedded_get_active_user(cur, pc_tag):
     return "", ""
 
 
-def embedded_alert_exists(cur, serial_number, alert_type):
-    cur.execute("""
+
+def embedded_alert_exists(cur, serial_number, alert_type, location=None, device_name=None):
+    query = """
         SELECT id
         FROM peripheral_alerts
         WHERE serial_number = ?
           AND alert_type = ?
           AND deleted = 0
-        LIMIT 1
-    """, (serial_number, alert_type))
+    """
+    params = [serial_number, alert_type]
 
+    if location is not None:
+        query += " AND location = ?"
+        params.append(str(location))
+
+    if device_name is not None:
+        query += " AND device_name = ?"
+        params.append(device_name)
+
+    query += " LIMIT 1"
+    cur.execute(query, params)
     return cur.fetchone() is not None
 
 
 def embedded_insert_alert_once(cur, serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id=None):
-    if embedded_alert_exists(cur, serial_number, alert_type):
+    if not serial_number or not alert_type:
+        return
+
+    if embedded_alert_exists(cur, serial_number, alert_type, location, device_name):
         return
 
     cur.execute("""
@@ -2489,12 +2632,11 @@ def embedded_insert_alert_once(cur, serial_number, alert_type, timestamp, device
         alert_type,
         timestamp,
         device_name,
-        location,
+        str(location),
         event_type,
         device_type,
         user_id
     ))
-
 
 def embedded_insert_usb_event(cur, event_type, device, pc_tag, lab_id):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2581,26 +2723,24 @@ def embedded_log_peripheral_event(cur, unique_id, event_type, device_type, pc_ta
 
 def embedded_count_cycles(cur, unique_id):
     """
-    Counts connected -> disconnected cycles for one registered device.
-    This is used for faulty detection.
+    Counts true unplug/disconnected events for one registered device.
+
+    Faulty rule:
+    - 3 actual disconnect events = faulty.
+    - Repeated background scans while the device is already unplugged
+      do not add more counts because embedded_log_peripheral_event()
+      skips duplicate consecutive events.
     """
     cur.execute("""
-        SELECT event_type
+        SELECT COUNT(*)
         FROM peripheral_logs
         WHERE unique_id = ?
-          AND datetime(timestamp) >= datetime('now', '-10 minutes')
-        ORDER BY datetime(timestamp) ASC, id ASC
+          AND event_type = 'disconnected'
+          AND datetime(timestamp) >= datetime('now', '-30 minutes')
     """, (unique_id,))
 
-    events = [row[0] for row in cur.fetchall()]
-    cycle_count = 0
-
-    for i in range(len(events) - 1):
-        if events[i] == "connected" and events[i + 1] == "disconnected":
-            cycle_count += 1
-
-    return cycle_count
-
+    row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
 
 def embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type):
     """
@@ -2625,6 +2765,45 @@ def embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type):
 
     return cur.fetchone()
 
+def embedded_find_registered_by_exact_id(cur, lab_id, pc_tag, unique_id):
+    """
+    Finds the registered peripheral by exact detected ID only.
+    This checks both serial_number and unique_id.
+    Used for original-device reconnect and exact disconnect.
+    """
+    if not unique_id:
+        return None
+
+    cur.execute("""
+        SELECT id, name, serial_number, unique_id, status
+        FROM peripherals
+        WHERE lab_id = ?
+          AND assigned_pc = ?
+          AND (
+                serial_number = ?
+                OR unique_id = ?
+              )
+        LIMIT 1
+    """, (str(lab_id), pc_tag, unique_id, unique_id))
+
+    return cur.fetchone()
+
+
+def embedded_get_registered_ids(serial_number, unique_id):
+    """
+    Returns all possible IDs of the registered device.
+    This prevents wrong comparison when serial_number and unique_id are different.
+    """
+    ids = []
+
+    if serial_number and str(serial_number).strip():
+        ids.append(str(serial_number).strip())
+
+    if unique_id and str(unique_id).strip():
+        ids.append(str(unique_id).strip())
+
+    return ids
+
 
 def embedded_find_registered_by_id_or_type(cur, lab_id, pc_tag, unique_id, device_type):
     """
@@ -2648,47 +2827,55 @@ def embedded_find_registered_by_id_or_type(cur, lab_id, pc_tag, unique_id, devic
     return embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type)
 
 
+
 def embedded_process_connected_event(cur, lab_id, pc_tag, device):
     """
-    Handles a device that is currently physically connected.
-    Updates registered peripheral as:
-    - connected: if same registered device is connected
-    - replaced: if same type but different unique_id is connected
-    - faulty: if plug/unplug cycles reached FAULTY_RECONNECT_COUNT
+    Connected logic:
+    - Exact registered ID = connected.
+    - Same type but different ID = replaced ONLY if original is already unplugged/missing/replaced.
+    - Prevents false replaced when original device is still connected.
     """
-    unique_id = device.get("unique_id")
-    device_type = embedded_normalize_device_type(device.get("device_type"))
+    ensure_peripheral_status_columns()
+
+    unique_id = str(device.get("unique_id") or device.get("serial_number") or "").strip()
+    device_type = embedded_normalize_device_type(device.get("device_type") or device.get("name"))
 
     if not unique_id:
-        return
-
-    registered = embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type)
-
-    if not registered:
-        return
-
-    peripheral_id, registered_name, registered_serial, registered_unique, old_status = registered
-    registered_id = registered_serial or registered_unique or unique_id
+        return None
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _, user_id = embedded_get_active_user(cur, pc_tag)
 
-    if registered_id == unique_id:
-        embedded_insert_usb_event(cur, "connected", device, pc_tag, lab_id)
-        embedded_log_peripheral_event(cur, registered_id, "connected", registered_name, pc_tag)
+    embedded_insert_usb_event(cur, "connected", {
+        "unique_id": unique_id,
+        "device_type": device_type,
+        "vendor": device.get("vendor") or "Unknown",
+        "product": device.get("product") or "Unknown"
+    }, pc_tag, lab_id)
 
-        cycle_count = embedded_count_cycles(cur, registered_id)
+    # 1. Exact registered device returned.
+    exact_registered = embedded_find_registered_by_exact_id(cur, lab_id, pc_tag, unique_id)
+
+    if exact_registered:
+        peripheral_id, registered_name, registered_serial, registered_unique, old_status = exact_registered
+        registered_log_id = registered_serial or registered_unique or unique_id
+
+        embedded_log_peripheral_event(cur, registered_log_id, "connected", registered_name, pc_tag)
+
+        cycle_count = embedded_count_cycles(cur, registered_log_id)
 
         if cycle_count >= FAULTY_RECONNECT_COUNT:
             cur.execute("""
                 UPDATE peripherals
-                SET status = 'faulty'
+                SET status = 'faulty',
+                    disconnected_at = NULL,
+                    status_updated_at = ?
                 WHERE id = ?
-            """, (peripheral_id,))
+            """, (now, peripheral_id))
 
             embedded_insert_alert_once(
                 cur,
-                registered_id,
+                registered_log_id,
                 "faulty",
                 now,
                 pc_tag,
@@ -2697,85 +2884,137 @@ def embedded_process_connected_event(cur, lab_id, pc_tag, device):
                 registered_name,
                 user_id
             )
-        else:
-            cur.execute("""
-                UPDATE peripherals
-                SET status = 'connected'
-                WHERE id = ?
-            """, (peripheral_id,))
 
-        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | {registered_id} | connected")
-        return
+            print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | {registered_log_id} | faulty")
+            return "faulty"
+
+        cur.execute("""
+            UPDATE peripherals
+            SET status = 'connected',
+                disconnected_at = NULL,
+                status_updated_at = ?
+            WHERE id = ?
+        """, (now, peripheral_id))
+
+        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | detected={unique_id} | connected from {old_status}")
+        return "connected"
+
+    # 2. Same type but different ID.
+    # This can only become replaced if registered original is already NOT connected.
+    type_registered = embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type)
+
+    if not type_registered:
+        print(f"[UNREGISTERED CONNECTED] {pc_tag} | {device_type} | {unique_id}")
+        return None
+
+    peripheral_id, registered_name, registered_serial, registered_unique, old_status = type_registered
+    registered_ids = embedded_get_registered_ids(registered_serial, registered_unique)
+    registered_log_id = registered_serial or registered_unique or unique_id
+    old_status_lower = str(old_status or "").lower()
+
+    if unique_id not in registered_ids:
+        # IMPORTANT FIX:
+        # Do not mark replaced while original registered device is still connected/faulty.
+        if old_status_lower not in ["unplugged", "missing", "replaced"]:
+            print(
+                f"[REPLACED BLOCKED] {pc_tag} | {registered_name} | "
+                f"registered={registered_log_id} detected={unique_id} | old_status={old_status}"
+            )
+            return None
+
+        cur.execute("""
+            UPDATE peripherals
+            SET status = 'replaced',
+                disconnected_at = NULL,
+                status_updated_at = ?
+            WHERE id = ?
+        """, (now, peripheral_id))
+
+        embedded_log_peripheral_event(cur, unique_id, "connected", device_type, pc_tag)
+
+        embedded_insert_alert_once(
+            cur,
+            registered_log_id,
+            "replaced",
+            now,
+            pc_tag,
+            str(lab_id),
+            "connected",
+            registered_name,
+            user_id
+        )
+
+        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | registered={registered_log_id} detected={unique_id} | replaced from {old_status}")
+        return "replaced"
 
     cur.execute("""
         UPDATE peripherals
-        SET status = 'replaced'
+        SET status = 'connected',
+            disconnected_at = NULL,
+            status_updated_at = ?
         WHERE id = ?
-    """, (peripheral_id,))
+    """, (now, peripheral_id))
 
-    embedded_insert_usb_event(cur, "connected", device, pc_tag, lab_id)
-    embedded_log_peripheral_event(cur, unique_id, "connected", device_type, pc_tag)
-
-    embedded_insert_alert_once(
-        cur,
-        unique_id,
-        "replaced",
-        now,
-        pc_tag,
-        str(lab_id),
-        "connected",
-        registered_name,
-        user_id
-    )
-
-    print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | registered={registered_id} detected={unique_id} | replaced")
-
+    print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | connected fallback")
+    return "connected"
 
 def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
     """
-    Handles a registered device that disappeared from the latest heartbeat scan.
-    Updates status as unplugged, then faulty if reconnect cycle threshold was reached.
+    Disconnected logic:
+    - Only exact registered ID can mark a registered peripheral unplugged.
+    - No type fallback here, so a new mouse will not make the original mouse wrongfully missing.
     """
-    unique_id = device.get("unique_id")
-    device_type = embedded_normalize_device_type(device.get("device_type"))
+    ensure_peripheral_status_columns()
+
+    unique_id = str(device.get("unique_id") or device.get("serial_number") or "").strip()
+    device_type = embedded_normalize_device_type(device.get("device_type") or device.get("name"))
 
     if not unique_id:
-        return
+        return None
 
-    registered = embedded_find_registered_by_id_or_type(cur, lab_id, pc_tag, unique_id, device_type)
+    registered = embedded_find_registered_by_exact_id(cur, lab_id, pc_tag, unique_id)
 
     if not registered:
-        print(f"[UNPLUGGED WARNING] No registered peripheral matched {unique_id} on {pc_tag} Lab {lab_id}")
-        return
+        embedded_insert_usb_event(cur, "disconnected", {
+            "unique_id": unique_id,
+            "device_type": device_type,
+            "vendor": device.get("vendor") or "Unknown",
+            "product": device.get("product") or "Unknown"
+        }, pc_tag, lab_id)
+
+        print(f"[UNREGISTERED DISCONNECTED] {pc_tag} | {device_type} | {unique_id}")
+        return None
 
     peripheral_id, registered_name, registered_serial, registered_unique, old_status = registered
-    registered_id = registered_serial or registered_unique or unique_id
+    registered_log_id = registered_serial or registered_unique or unique_id
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _, user_id = embedded_get_active_user(cur, pc_tag)
 
-    event_timestamp = embedded_log_peripheral_event(cur, registered_id, "disconnected", registered_name, pc_tag)
+    event_timestamp = embedded_log_peripheral_event(cur, registered_log_id, "disconnected", registered_name, pc_tag)
 
     if event_timestamp:
         embedded_insert_usb_event(cur, "disconnected", {
-            "unique_id": registered_id,
+            "unique_id": registered_log_id,
             "device_type": registered_name,
             "vendor": device.get("vendor") or "Unknown",
             "product": device.get("product") or "Unknown"
         }, pc_tag, lab_id)
 
-    cycle_count = embedded_count_cycles(cur, registered_id)
+    cycle_count = embedded_count_cycles(cur, registered_log_id)
 
     if cycle_count >= FAULTY_RECONNECT_COUNT:
         cur.execute("""
             UPDATE peripherals
-            SET status = 'faulty'
+            SET status = 'faulty',
+                disconnected_at = NULL,
+                status_updated_at = ?
             WHERE id = ?
-        """, (peripheral_id,))
+        """, (now, peripheral_id))
 
         embedded_insert_alert_once(
             cur,
-            registered_id,
+            registered_log_id,
             "faulty",
             now,
             pc_tag,
@@ -2786,22 +3025,32 @@ def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
         )
 
         print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | faulty")
-    else:
-        cur.execute("""
-            UPDATE peripherals
-            SET status = 'unplugged'
-            WHERE id = ?
-        """, (peripheral_id,))
+        return "faulty"
 
-        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | unplugged")
+    # This is the only place that starts the missing timer.
+    cur.execute("""
+        UPDATE peripherals
+        SET status = 'unplugged',
+            disconnected_at = ?,
+            status_updated_at = ?
+        WHERE id = ?
+    """, (now, now, peripheral_id))
+
+    print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | unplugged from {old_status}")
+    return "unplugged"
 
 
 def embedded_check_missing_devices(cur, lab_id, pc_tag):
     """
-    Registered device becomes missing if it has been unplugged for MISSING_THRESHOLD_SECONDS.
+    Missing logic:
+    - Only unplugged devices can become missing.
+    - Uses peripherals.disconnected_at, not old peripheral_logs.
+    - This fixes the bug where unplugged becomes missing immediately because of old logs.
     """
+    ensure_peripheral_status_columns()
+
     cur.execute("""
-        SELECT id, name, serial_number, unique_id, status
+        SELECT id, name, serial_number, unique_id, status, disconnected_at
         FROM peripherals
         WHERE lab_id = ?
           AND assigned_pc = ?
@@ -2809,46 +3058,55 @@ def embedded_check_missing_devices(cur, lab_id, pc_tag):
     """, (str(lab_id), pc_tag))
 
     rows = cur.fetchall()
+    now = datetime.now()
 
-    for peripheral_id, device_name, serial_number, unique_id, status in rows:
-        registered_id = serial_number or unique_id
+    for peripheral_id, device_name, serial_number, unique_id, status, disconnected_at in rows:
+        registered_ids = embedded_get_registered_ids(serial_number, unique_id)
 
-        if not registered_id:
+        if not registered_ids:
             continue
 
-        cur.execute("""
-            SELECT timestamp
-            FROM peripheral_logs
-            WHERE unique_id = ?
-              AND event_type = 'disconnected'
-            ORDER BY datetime(timestamp) DESC, id DESC
-            LIMIT 1
-        """, (registered_id,))
+        registered_log_id = registered_ids[0]
 
-        last_unplug = cur.fetchone()
-
-        if not last_unplug:
+        if not disconnected_at:
+            cur.execute("""
+                UPDATE peripherals
+                SET disconnected_at = ?,
+                    status_updated_at = ?
+                WHERE id = ?
+            """, (now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"), peripheral_id))
             continue
 
         try:
-            last_unplug_time = datetime.strptime(last_unplug[0], "%Y-%m-%d %H:%M:%S")
+            disconnected_time = datetime.strptime(disconnected_at, "%Y-%m-%d %H:%M:%S")
         except Exception:
-            continue
-
-        if (datetime.now() - last_unplug_time).total_seconds() >= MISSING_THRESHOLD_SECONDS:
             cur.execute("""
                 UPDATE peripherals
-                SET status = 'missing'
+                SET disconnected_at = ?,
+                    status_updated_at = ?
                 WHERE id = ?
-            """, (peripheral_id,))
+            """, (now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"), peripheral_id))
+            continue
+
+        elapsed = (now - disconnected_time).total_seconds()
+
+        if elapsed >= MISSING_THRESHOLD_SECONDS:
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute("""
+                UPDATE peripherals
+                SET status = 'missing',
+                    status_updated_at = ?
+                WHERE id = ?
+            """, (timestamp, peripheral_id))
 
             _, user_id = embedded_get_active_user(cur, pc_tag)
 
             embedded_insert_alert_once(
                 cur,
-                registered_id,
+                registered_log_id,
                 "missing",
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                timestamp,
                 pc_tag,
                 str(lab_id),
                 "disconnected",
@@ -2861,170 +3119,248 @@ def embedded_check_missing_devices(cur, lab_id, pc_tag):
 
 def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
     """
-    Saves DetectionAgent heartbeat into detected_devices and updates peripherals.
+    Saves scanner heartbeat into detected_devices and updates peripherals.
 
-    This is the main logic for:
-    connected, unplugged, faulty, missing, replaced
-
-    DetectionAgent sends the FULL current list of connected physical devices.
-    This function compares that list against previous connected rows and
-    registered peripherals.
+    Fixed:
+    - exact registered device is processed first
+    - unregistered same-type device becomes replaced ONLY if original is not connected
+    - old authorized WebUSB devices do not force false replaced
     """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
+    with DEVICE_SCAN_LOCK:
+        try:
+            ensure_detected_devices_table()
+            ensure_peripheral_status_columns()
 
-        ensure_detected_devices_table()
-
-        cur.execute("""
-            SELECT unique_id, name, device_type, vendor, product, serial_number
-            FROM detected_devices
-            WHERE lab_id = ?
-              AND pc_tag = ?
-              AND status = 'connected'
-        """, (str(lab_id), pc_tag))
-
-        previous_connected = {
-            row[0]: {
-                "unique_id": row[0],
-                "name": row[1],
-                "device_type": row[2],
-                "vendor": row[3],
-                "product": row[4],
-                "serial_number": row[5]
-            }
-            for row in cur.fetchall()
-        }
-
-        current_connected = {}
-
-        for dev in devices:
-            if not isinstance(dev, dict):
-                continue
-
-            unique_id = str(dev.get("unique_id") or dev.get("serial_number") or "").strip()
-
-            if not unique_id:
-                continue
-
-            device_type = embedded_normalize_device_type(dev.get("device_type") or dev.get("name"))
-
-            if device_type == "Unknown":
-                continue
-
-            clean = {
-                "unique_id": unique_id,
-                "name": dev.get("name") or device_type,
-                "device_type": device_type,
-                "vendor": dev.get("vendor") or "Unknown",
-                "product": dev.get("product") or "Unknown",
-                "serial_number": unique_id
-            }
-
-            current_connected[unique_id] = clean
-
-        for unique_id, dev in current_connected.items():
-            device_type = dev.get("device_type")
+            conn = sqlite3.connect(DB_FILE, timeout=30)
+            cur = conn.cursor()
 
             cur.execute("""
-                INSERT INTO detected_devices
-                (lab_id, pc_tag, unique_id, name, device_type, vendor, product, serial_number, status, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
-                ON CONFLICT(lab_id, pc_tag, unique_id)
-                DO UPDATE SET
-                    name = excluded.name,
-                    device_type = excluded.device_type,
-                    vendor = excluded.vendor,
-                    product = excluded.product,
-                    serial_number = excluded.serial_number,
-                    status = 'connected',
-                    last_seen = excluded.last_seen
-            """, (
-                str(lab_id),
-                pc_tag,
-                unique_id,
-                dev.get("name") or device_type,
-                device_type,
-                dev.get("vendor") or "Unknown",
-                dev.get("product") or "Unknown",
-                unique_id,
-                now
-            ))
-
-            # Always verify status. This fixes rows that stayed unplugged/missing
-            # even when the device is physically connected again.
-            embedded_process_connected_event(cur, lab_id, pc_tag, dev)
-
-        disconnected_ids = set(previous_connected.keys()) - set(current_connected.keys())
-
-        for unique_id in disconnected_ids:
-            old_dev = previous_connected[unique_id]
-
-            cur.execute("""
-                UPDATE detected_devices
-                SET status = 'unplugged', last_seen = ?
+                SELECT unique_id, name, device_type, vendor, product, serial_number
+                FROM detected_devices
                 WHERE lab_id = ?
                   AND pc_tag = ?
-                  AND unique_id = ?
-            """, (now, str(lab_id), pc_tag, unique_id))
+                  AND status = 'connected'
+            """, (str(lab_id), pc_tag))
 
-            embedded_process_disconnected_event(cur, lab_id, pc_tag, old_dev)
+            previous_connected = {
+                row[0]: {
+                    "unique_id": row[0],
+                    "name": row[1],
+                    "device_type": row[2],
+                    "vendor": row[3],
+                    "product": row[4],
+                    "serial_number": row[5]
+                }
+                for row in cur.fetchall()
+            }
 
-        current_ids = set(current_connected.keys())
+            current_connected = {}
 
-        cur.execute("""
-            SELECT id, name, serial_number, unique_id, status
-            FROM peripherals
-            WHERE lab_id = ?
-              AND assigned_pc = ?
-        """, (str(lab_id), pc_tag))
+            for dev in devices:
+                if not isinstance(dev, dict):
+                    continue
 
-        registered_rows = cur.fetchall()
+                unique_id = str(dev.get("unique_id") or dev.get("serial_number") or "").strip()
 
-        for peripheral_id, name, serial_number, unique_id, status in registered_rows:
-            registered_id = serial_number or unique_id
+                if not unique_id:
+                    continue
 
-            if not registered_id:
-                continue
+                device_type = embedded_normalize_device_type(dev.get("device_type") or dev.get("name"))
 
-            normalized_name = embedded_normalize_device_type(name)
+                if device_type == "Unknown":
+                    continue
 
-            same_type_current = [
-                dev for dev in current_connected.values()
-                if embedded_normalize_device_type(dev.get("device_type")) in embedded_device_type_candidates(normalized_name)
-            ]
+                current_connected[unique_id] = {
+                    "unique_id": unique_id,
+                    "name": dev.get("name") or device_type,
+                    "device_type": device_type,
+                    "vendor": dev.get("vendor") or "Unknown",
+                    "product": dev.get("product") or "Unknown",
+                    "serial_number": str(dev.get("serial_number") or unique_id).strip()
+                }
 
-            same_id_is_connected = registered_id in current_ids
-            replacement_connected = any(dev.get("unique_id") != registered_id for dev in same_type_current)
+            current_ids = set(current_connected.keys())
 
-            if same_id_is_connected:
-                continue
+            for unique_id, dev in current_connected.items():
+                device_type = dev.get("device_type")
 
-            if replacement_connected:
-                continue
+                cur.execute("""
+                    INSERT INTO detected_devices
+                    (lab_id, pc_tag, unique_id, name, device_type, vendor, product, serial_number, status, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+                    ON CONFLICT(lab_id, pc_tag, unique_id)
+                    DO UPDATE SET
+                        name = excluded.name,
+                        device_type = excluded.device_type,
+                        vendor = excluded.vendor,
+                        product = excluded.product,
+                        serial_number = excluded.serial_number,
+                        status = 'connected',
+                        last_seen = excluded.last_seen
+                """, (
+                    str(lab_id),
+                    pc_tag,
+                    unique_id,
+                    dev.get("name") or device_type,
+                    device_type,
+                    dev.get("vendor") or "Unknown",
+                    dev.get("product") or "Unknown",
+                    dev.get("serial_number") or unique_id,
+                    now
+                ))
 
-            if str(status).lower() in ["connected", "replaced"]:
-                embedded_process_disconnected_event(cur, lab_id, pc_tag, {
-                    "unique_id": registered_id,
-                    "device_type": name,
-                    "name": name,
-                    "vendor": "Unknown",
-                    "product": "Unknown"
-                })
+            cur.execute("""
+                SELECT id, name, serial_number, unique_id, status
+                FROM peripherals
+                WHERE lab_id = ?
+                  AND assigned_pc = ?
+            """, (str(lab_id), pc_tag))
 
-        embedded_check_missing_devices(cur, lab_id, pc_tag)
+            registered_rows = cur.fetchall()
 
-        conn.commit()
-        conn.close()
+            processed_registered_ids = set()
 
-        print(f"[EMBEDDED AGENT] {pc_tag} | Lab {lab_id} | Connected physical devices: {len(current_connected)}")
+            # 1. Exact registered devices first.
+            for peripheral_id, name, serial_number, unique_id, status in registered_rows:
+                registered_ids = embedded_get_registered_ids(serial_number, unique_id)
 
-    except Exception as e:
-        print("[EMBEDDED SAVE/STATUS ERROR]", e)
+                if not registered_ids:
+                    continue
+
+                exact_id = None
+
+                for reg_id in registered_ids:
+                    if reg_id in current_ids:
+                        exact_id = reg_id
+                        break
+
+                if exact_id:
+                    embedded_process_connected_event(cur, lab_id, pc_tag, current_connected[exact_id])
+                    processed_registered_ids.add(peripheral_id)
+
+            # 2. Replacement only if original is not connected.
+            for peripheral_id, name, serial_number, unique_id, status in registered_rows:
+                if peripheral_id in processed_registered_ids:
+                    continue
+
+                registered_ids = embedded_get_registered_ids(serial_number, unique_id)
+
+                if not registered_ids:
+                    continue
+
+                normalized_name = embedded_normalize_device_type(name)
+
+                same_type_current = [
+                    dev for dev in current_connected.values()
+                    if embedded_normalize_device_type(dev.get("device_type") or dev.get("name")) == normalized_name
+                ]
+
+                replacement_device = None
+
+                for dev in same_type_current:
+                    detected_id = str(dev.get("unique_id") or dev.get("serial_number") or "").strip()
+
+                    if detected_id and detected_id not in registered_ids:
+                        replacement_device = dev
+                        break
+
+                current_status = str(status or "").lower()
+
+                # Replaced lang kapag original registered device ay wala na talaga.
+                if replacement_device and current_status in ["unplugged", "missing", "replaced"]:
+                    embedded_process_connected_event(cur, lab_id, pc_tag, replacement_device)
+                    processed_registered_ids.add(peripheral_id)
+                else:
+                    if replacement_device:
+                        print(
+                            f"[AUTO REPLACED BLOCKED] {pc_tag} | {name} | "
+                            f"status={status} | original still not unplugged/missing"
+                        )
+
+            # 3. Removed physical devices.
+            disconnected_ids = set(previous_connected.keys()) - current_ids
+
+            for unique_id in disconnected_ids:
+                old_dev = previous_connected[unique_id]
+                old_type = embedded_normalize_device_type(old_dev.get("device_type") or old_dev.get("name"))
+
+                cur.execute("""
+                    UPDATE detected_devices
+                    SET status = 'unplugged',
+                        last_seen = ?
+                    WHERE lab_id = ?
+                      AND pc_tag = ?
+                      AND unique_id = ?
+                """, (now, str(lab_id), pc_tag, unique_id))
+
+                same_type_replacement_now = any(
+                    embedded_normalize_device_type(dev.get("device_type") or dev.get("name")) == old_type
+                    and str(dev.get("unique_id") or dev.get("serial_number") or "").strip() != str(unique_id).strip()
+                    for dev in current_connected.values()
+                )
+
+                if same_type_replacement_now:
+                    print(f"[SKIP UNPLUGGED OVERWRITE] {pc_tag} | old={unique_id} | same type replacement connected")
+                    continue
+
+                embedded_process_disconnected_event(cur, lab_id, pc_tag, old_dev)
+
+            # 4. Registered not seen and no replacement seen.
+            for peripheral_id, name, serial_number, unique_id, status in registered_rows:
+                registered_ids = embedded_get_registered_ids(serial_number, unique_id)
+
+                if not registered_ids:
+                    continue
+
+                normalized_name = embedded_normalize_device_type(name)
+
+                same_type_current = [
+                    dev for dev in current_connected.values()
+                    if embedded_normalize_device_type(dev.get("device_type") or dev.get("name")) == normalized_name
+                ]
+
+                same_id_connected = any(reg_id in current_ids for reg_id in registered_ids)
+
+                replacement_connected = any(
+                    str(dev.get("unique_id") or dev.get("serial_number") or "").strip() not in registered_ids
+                    for dev in same_type_current
+                )
+
+                if same_id_connected or replacement_connected:
+                    continue
+
+                current_status = str(status or "").lower()
+
+                if current_status in ["connected", "replaced"]:
+                    embedded_process_disconnected_event(cur, lab_id, pc_tag, {
+                        "unique_id": registered_ids[0],
+                        "serial_number": registered_ids[0],
+                        "device_type": name,
+                        "name": name,
+                        "vendor": "Unknown",
+                        "product": "Unknown"
+                    })
+
+            embedded_check_missing_devices(cur, lab_id, pc_tag)
+
+            conn.commit()
+            conn.close()
+
+            print(f"[AUTO STATUS] {pc_tag} | Lab {lab_id} | Connected physical devices: {len(current_connected)}")
+
+        except Exception as e:
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception:
+                pass
+
+            print("[EMBEDDED SAVE/STATUS ERROR]", e)
 
 
+@app.route("/api/webusb_sync", methods=["POST"])
 
 @app.route("/api/webusb_sync", methods=["POST"])
 def api_webusb_sync():
@@ -3099,6 +3435,7 @@ def api_webusb_sync():
             })
 
         ensure_detected_devices_table()
+        remember_scanner_target(lab_id, pc_tag)
         embedded_save_detected_devices_and_update_status(lab_id, pc_tag, cleaned_devices)
 
         with sqlite3.connect(DB_FILE) as conn:
@@ -3215,6 +3552,7 @@ def agent_heartbeat():
         })
 
     ensure_detected_devices_table()
+    remember_scanner_target(lab_id, pc_tag)
     embedded_save_detected_devices_and_update_status(lab_id, pc_tag, cleaned_devices)
 
     return jsonify({
@@ -3229,14 +3567,12 @@ def agent_heartbeat():
 @app.route("/api/scan_devices", methods=["GET"])
 def scan_devices():
     """
-    Called by inventory.html when clicking Scan Devices.
+    Manual scan endpoint.
 
-    Local Windows mode:
-        Tries live physical scan only when Flask is running on Windows.
-
-    Render/cloud mode:
-        Returns devices previously sent by local DetectionAgent through
-        /api/agent/heartbeat. Render cannot scan client USB ports directly.
+    Important fixes:
+    - Saves the selected PC as scanner target for automatic background scanning.
+    - Saves scan results even if live_devices is empty.
+      Empty scan is needed to update connected -> unplugged/missing/faulty.
     """
     lab_id = request.args.get("lab_id")
     pc_tag = request.args.get("pc_tag")
@@ -3249,11 +3585,12 @@ def scan_devices():
 
     try:
         ensure_detected_devices_table()
+        ensure_peripheral_status_columns()
+        remember_scanner_target(lab_id, pc_tag)
 
         live_devices = []
 
-        # Try local live scan only on Windows.
-        # On Render/Linux, this will not work because the USB devices are on the client PC.
+        # Local live scan only works when Flask runs on the actual Windows PC.
         if os.name == "nt":
             try:
                 live_devices = embedded_get_connected_devices()
@@ -3261,11 +3598,14 @@ def scan_devices():
                 print(f"[LIVE SCAN] Found physical devices: {len(live_devices)}")
                 for device in live_devices:
                     print("[LIVE SCAN DEVICE]", device)
-
-                if live_devices:
-                    embedded_save_detected_devices_and_update_status(lab_id, pc_tag, live_devices)
             except Exception as scan_error:
                 print("[LOCAL LIVE SCAN ERROR]", scan_error)
+                live_devices = []
+
+        # IMPORTANT:
+        # Always save, even if live_devices is empty.
+        # Otherwise unplugged/missing will not update.
+        embedded_save_detected_devices_and_update_status(lab_id, pc_tag, live_devices)
 
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -3292,20 +3632,41 @@ def scan_devices():
         """, (str(lab_id), pc_tag))
 
         devices = [dict(row) for row in cur.fetchall()]
+
+        cur.execute("""
+            SELECT
+                id,
+                name,
+                brand,
+                unique_id,
+                serial_number,
+                assigned_pc,
+                status,
+                remarks,
+                disconnected_at,
+                status_updated_at
+            FROM peripherals
+            WHERE lab_id = ?
+              AND assigned_pc = ?
+            ORDER BY name ASC
+        """, (str(lab_id), pc_tag))
+
+        peripherals = [dict(row) for row in cur.fetchall()]
+
         conn.close()
 
-        message = "Detected devices loaded."
-        if not devices:
-            message = (
-                "No physical connected devices found. "
-                "If this app is deployed on Render, use the WebUSB Scan Devices button in Chrome/Edge on the actual PC."
-            )
+        status_hash = "|".join([
+            f"{p.get('id')}:{p.get('status')}:{p.get('status_updated_at')}"
+            for p in peripherals
+        ])
 
         return jsonify({
             "success": True,
             "devices": devices,
-            "message": message,
-            "source": "local_live_scan" if live_devices else "agent_saved_devices"
+            "peripherals": peripherals,
+            "status_hash": status_hash,
+            "message": "Scan complete. Automatic scanner target saved.",
+            "source": "local_live_scan" if os.name == "nt" else "agent_saved_devices"
         })
 
     except Exception as e:
@@ -3315,14 +3676,16 @@ def scan_devices():
             "message": str(e)
         }), 500
 
+
 @app.route("/api/register_scanned_peripheral", methods=["POST"])
 def register_scanned_peripheral():
     """
     Registers selected scanned/WebUSB device into peripherals.
 
-    Serial Number rule:
-    - Use browser/device serial if available.
-    - If unavailable, use the same generated ID as unique_id.
+    Fixed:
+    - clears old same-type detected device rows
+    - clears old logs/alerts
+    - prevents false faulty/replaced right after adding
     """
     data = request.get_json(silent=True) or {}
 
@@ -3347,115 +3710,123 @@ def register_scanned_peripheral():
         }), 400
 
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id
-            FROM devices
-            WHERE tag = ?
-              AND (location = ? OR comlab_id = ?)
-            LIMIT 1
-        """, (pc_tag, lab_id, lab_id))
-
-        pc_exists = cur.fetchone()
-
-        if not pc_exists:
-            conn.close()
-            return jsonify({
-                "success": False,
-                "message": f"PC '{pc_tag}' not found in ComLab {lab_id}."
-            }), 404
-
-        cur.execute("""
-            SELECT assigned_pc, lab_id, name
-            FROM peripherals
-            WHERE unique_id = ?
-               OR serial_number = ?
-            LIMIT 1
-        """, (unique_id, serial_number))
-
-        existing_unique = cur.fetchone()
-
-        if existing_unique:
-            existing_pc = existing_unique[0]
-            existing_lab = existing_unique[1]
-            existing_name = existing_unique[2]
-
-            conn.close()
-            return jsonify({
-                "success": False,
-                "message": f"This {existing_name} is already registered to Lab {existing_lab} - {existing_pc}."
-            }), 409
-
-        candidates = embedded_device_type_candidates(device_type)
-        placeholders = ",".join(["LOWER(?)"] * len(candidates))
-
-        cur.execute(f"""
-            SELECT id
-            FROM peripherals
-            WHERE assigned_pc = ?
-              AND lab_id = ?
-              AND LOWER(name) IN ({placeholders})
-            LIMIT 1
-        """, [pc_tag, lab_id] + candidates)
-
-        existing_type = cur.fetchone()
-
-        if existing_type:
-            conn.close()
-            return jsonify({
-                "success": False,
-                "message": f"{pc_tag} already has a registered {device_type}."
-            }), 409
-
-        cur.execute("""
-            INSERT INTO peripherals
-            (name, brand, unique_id, serial_number, status, remarks, lab_id, assigned_pc)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            device_type,
-            brand,
-            unique_id,
-            serial_number,
-            "connected",
-            remarks,
-            lab_id,
-            pc_tag
-        ))
-
-        peripheral_id = cur.lastrowid
-
         ensure_detected_devices_table()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ensure_peripheral_status_columns()
 
-        cur.execute("""
-            INSERT INTO detected_devices
-            (lab_id, pc_tag, unique_id, name, device_type, vendor, product, serial_number, status, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
-            ON CONFLICT(lab_id, pc_tag, unique_id)
-            DO UPDATE SET
-                name = excluded.name,
-                device_type = excluded.device_type,
-                vendor = excluded.vendor,
-                product = excluded.product,
-                serial_number = excluded.serial_number,
-                status = 'connected',
-                last_seen = excluded.last_seen
-        """, (
-            lab_id,
-            pc_tag,
-            unique_id,
-            data.get("name") or device_type,
-            device_type,
-            data.get("vendor") or "Unknown",
-            data.get("product") or "Unknown",
-            serial_number,
-            now
-        ))
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
 
-        conn.commit()
-        conn.close()
+            cur.execute("""
+                SELECT id
+                FROM devices
+                WHERE tag = ?
+                  AND (location = ? OR comlab_id = ?)
+                LIMIT 1
+            """, (pc_tag, lab_id, lab_id))
+
+            pc_exists = cur.fetchone()
+
+            if not pc_exists:
+                return jsonify({
+                    "success": False,
+                    "message": f"PC '{pc_tag}' not found in ComLab {lab_id}."
+                }), 404
+
+            cur.execute("""
+                SELECT assigned_pc, lab_id, name
+                FROM peripherals
+                WHERE unique_id = ?
+                   OR serial_number = ?
+                LIMIT 1
+            """, (unique_id, serial_number))
+
+            existing_unique = cur.fetchone()
+
+            if existing_unique:
+                existing_pc = existing_unique[0]
+                existing_lab = existing_unique[1]
+                existing_name = existing_unique[2]
+
+                return jsonify({
+                    "success": False,
+                    "message": f"This {existing_name} is already registered to Lab {existing_lab} - {existing_pc}."
+                }), 409
+
+            candidates = embedded_device_type_candidates(device_type)
+            placeholders = ",".join(["LOWER(?)"] * len(candidates))
+
+            cur.execute(f"""
+                SELECT id
+                FROM peripherals
+                WHERE assigned_pc = ?
+                  AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                  AND LOWER(name) IN ({placeholders})
+                LIMIT 1
+            """, [pc_tag, lab_id] + [c.lower() for c in candidates])
+
+            existing_type = cur.fetchone()
+
+            if existing_type:
+                return jsonify({
+                    "success": False,
+                    "message": f"{pc_tag} already has a registered {device_type}."
+                }), 409
+
+            cleanup_peripheral_runtime_records(
+                cur,
+                lab_id=lab_id,
+                pc_tag=pc_tag,
+                unique_id=unique_id,
+                serial_number=serial_number,
+                device_type=device_type,
+                delete_same_type_detected=True
+            )
+
+            cur.execute("""
+                INSERT INTO peripherals
+                (name, brand, unique_id, serial_number, status, remarks, lab_id, assigned_pc)
+                VALUES (?, ?, ?, ?, 'connected', ?, ?, ?)
+            """, (
+                device_type,
+                brand,
+                unique_id,
+                serial_number,
+                remarks,
+                lab_id,
+                pc_tag
+            ))
+
+            peripheral_id = cur.lastrowid
+            reset_new_peripheral_status(cur, peripheral_id)
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute("""
+                INSERT INTO detected_devices
+                (lab_id, pc_tag, unique_id, name, device_type, vendor, product, serial_number, status, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+                ON CONFLICT(lab_id, pc_tag, unique_id)
+                DO UPDATE SET
+                    name = excluded.name,
+                    device_type = excluded.device_type,
+                    vendor = excluded.vendor,
+                    product = excluded.product,
+                    serial_number = excluded.serial_number,
+                    status = 'connected',
+                    last_seen = excluded.last_seen
+            """, (
+                lab_id,
+                pc_tag,
+                unique_id,
+                data.get("name") or device_type,
+                device_type,
+                data.get("vendor") or brand,
+                data.get("product") or brand,
+                serial_number,
+                now
+            ))
+
+            conn.commit()
 
         return jsonify({
             "success": True,
@@ -3474,11 +3845,14 @@ def register_scanned_peripheral():
         })
 
     except sqlite3.Error as e:
+        print("[REGISTER SCANNED ERROR]", e)
         return jsonify({
             "success": False,
             "message": str(e)
         }), 500
 
+
+@app.route("/api/agent/identify_pc", methods=["GET"])
 
 @app.route("/api/agent/identify_pc", methods=["GET"])
 def agent_identify_pc():
@@ -3537,6 +3911,80 @@ def agent_identify_pc():
         "pc_tag": row["tag"],
         "lab_id": lab_id
     })
+
+@app.route("/api/reset_pc_peripheral_runtime", methods=["POST"])
+def reset_pc_peripheral_runtime():
+    """
+    Optional cleanup API for old test data.
+    Use this once if old faulty/replaced/missing logs are already stuck.
+    """
+    data = request.get_json(silent=True) or {}
+
+    lab_id = str(data.get("lab_id") or "").strip()
+    pc_tag = str(data.get("pc_tag") or "").strip()
+
+    if not lab_id or not pc_tag:
+        return jsonify({
+            "success": False,
+            "message": "lab_id and pc_tag are required."
+        }), 400
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT name, serial_number, unique_id
+                FROM peripherals
+                WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                  AND assigned_pc = ?
+            """, (lab_id, pc_tag))
+
+            rows = cur.fetchall()
+
+            for name, serial_number, unique_id in rows:
+                cleanup_peripheral_runtime_records(
+                    cur,
+                    lab_id=lab_id,
+                    pc_tag=pc_tag,
+                    unique_id=unique_id,
+                    serial_number=serial_number,
+                    device_type=name,
+                    delete_same_type_detected=False
+                )
+
+            cur.execute("""
+                UPDATE peripherals
+                SET status = 'connected',
+                    disconnected_at = NULL,
+                    status_updated_at = ?
+                WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                  AND assigned_pc = ?
+            """, (
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                lab_id,
+                pc_tag
+            ))
+
+            cur.execute("""
+                DELETE FROM detected_devices
+                WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+                  AND pc_tag = ?
+            """, (lab_id, pc_tag))
+
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": f"Runtime status reset for {pc_tag}."
+        })
+
+    except Exception as e:
+        print("[RESET PC RUNTIME ERROR]", e)
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
 
 @app.route("/api/peripheral_statuses/<int:comlab_id>")
 def api_peripheral_statuses(comlab_id):
@@ -3709,8 +4157,12 @@ def debug_pc_status(lab_id, pc_tag):
     })
 
 if __name__ == "__main__":
-    # Embedded scanner is for local testing only.
-    # Do not use it as the only scanner after deploying to Render.
+    ensure_detected_devices_table()
+    ensure_peripheral_status_columns()
+
+    # Keep this ON for automatic local USB status updates.
+    # Set DISABLE_EMBEDDED_SCANNER=1 only if you use a separate local agent.
     if os.environ.get("DISABLE_EMBEDDED_SCANNER", "0") != "1":
         start_embedded_detection_agent()
+
     app.run(debug=True, use_reloader=False)

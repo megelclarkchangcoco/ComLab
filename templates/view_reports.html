@@ -2,25 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <title>View Reports - {{ lab_name }}</title>
 
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
-    <title>📋 Anomaly Reports - {{ lab_name }}</title>
-    <script>
-        // Auto-refresh every 5 seconds if modal is closed
-        setInterval(() => {
-            const modal = document.getElementById("deletedModal");
-            if (!modal || window.getComputedStyle(modal).display === "none") {
-                window.location.reload();
-            }
-        }, 5000);
-    </script>
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #eef2f7;
+            font-family: 'Segoe UI', sans-serif;
+            background: #eef2f7;
             margin: 0;
             padding: 20px;
+            color: #111827;
         }
 
         header {
@@ -29,212 +22,273 @@
             align-items: center;
             background: #007bff;
             color: white;
-            padding: 15px 40px;
-            border-radius: 12px;
-            margin-bottom: 40px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            padding: 18px 35px;
+            border-radius: 14px;
+            margin-bottom: 28px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+            gap: 15px;
+            flex-wrap: wrap;
         }
-        header h2 { margin: 0; font-size: 22px; }
+
+        header h2 {
+            margin: 0;
+            font-size: 23px;
+            font-weight: 800;
+        }
 
         .menu-buttons {
             display: flex;
-            gap: 15px;
+            gap: 10px;
+            flex-wrap: wrap;
         }
 
         .menu-buttons button {
             background: white;
             color: #007bff;
             border: none;
-            padding: 10px 18px;
-            border-radius: 8px;
+            padding: 10px 16px;
+            border-radius: 9px;
             cursor: pointer;
-            font-weight: 600;
-            transition: background 0.3s, transform 0.2s;
-        }
-        .menu-buttons button:hover {
-            background: #e7f1ff;
-            transform: scale(1.05);
+            font-weight: 700;
+            transition: 0.2s;
         }
 
-        /* Filter form */
+        .menu-buttons button:hover {
+            background: #e7f1ff;
+            transform: translateY(-1px);
+        }
+
+        .info-box {
+            background: #ffffff;
+            border-left: 5px solid #007bff;
+            padding: 16px 18px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            line-height: 1.5;
+        }
+
+        .info-box b {
+            color: #0f172a;
+        }
+
         .filter-form {
             display: flex;
             flex-wrap: wrap;
-            justify-content: center;
-            gap: 20px;
-            background: #fff;
-            padding: 25px;
-            border-radius: 16px;
-            box-shadow: 0 6px 20px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
+            gap: 16px;
+            align-items: flex-end;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 14px;
+            box-shadow: 0 5px 16px rgba(0,0,0,0.08);
+            margin-bottom: 22px;
         }
-        .filter-group { display: flex; flex-direction: column; min-width: 180px; }
-        .filter-group label { font-weight: 600; margin-bottom: 8px; color: #333; }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            min-width: 170px;
+            gap: 7px;
+        }
+
+        .filter-group label {
+            font-size: 13px;
+            font-weight: 800;
+            color: #374151;
+        }
+
         .filter-group input,
         .filter-group select {
-            padding: 10px 12px;
+            height: 40px;
+            padding: 0 10px;
             border-radius: 8px;
-            border: 1px solid #ccc;
+            border: 1px solid #cbd5e1;
             outline: none;
-            transition: border 0.3s, box-shadow 0.3s;
+            background: white;
         }
+
         .filter-group input:focus,
         .filter-group select:focus {
             border-color: #007bff;
-            box-shadow: 0 0 6px rgba(0, 123, 255, 0.3);
+            box-shadow: 0 0 0 3px rgba(0,123,255,0.12);
         }
-        .filter-buttons {
-            display: flex;
-            align-items: flex-end;
-            gap: 10px;
-        }
-        .btn-filter, .btn-reset {
-            padding: 10px 18px;
-            border-radius: 8px;
-            border: none;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.3s, transform 0.2s;
-        }
-        .btn-filter {
-            background-color: #007bff;
-            color: white;
-        }
-        .btn-filter:hover {
-            background-color: #0056b3;
-            transform: scale(1.05);
-        }
+
+        .btn-filter,
         .btn-reset {
-            background-color: #f0f0f0;
-            color: #333;
-        }
-        .btn-reset:hover {
-            background-color: #d6d6d6;
-            transform: scale(1.05);
-        }
-        @media (max-width: 900px) {
-            .filter-form { flex-direction: column; align-items: center; }
-            .filter-buttons { justify-content: center; }
-        }
-
-        /* History button */
-        .history-btn {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 4px;
-            width: 70px;
-            height: 70px;
-            background: linear-gradient(135deg, #007bff, #0056d6);
-            color: white;
-            border: none;
-            border-radius: 50%;
-            box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            outline: none;
-            margin-left: 20px;
-        }
-        .history-btn:hover {
-            background: linear-gradient(135deg, #0056d6, #003f9e);
-            transform: scale(1.15);
-            box-shadow: 0 6px 16px rgba(0, 86, 214, 0.4);
-        }
-        .history-btn .btn-label { font-size: 12px; font-weight: 600; text-align: center; }
-
-        /* Table */
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            background: #fff;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        th, td {
-            padding: 10px;
-            border-bottom: 1px solid #ccc;
-            text-align: center;
-        }
-        th { background-color: #007bff; color: white; }
-        tr:hover { background-color: #f1f1f1; }
-        .timestamp { color: #555; font-size: 0.9em; }
-        .no-data { text-align: center; color: #777; }
-
-        /* Modal */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0; top: 0;
-            width: 100%; height: 100%;
-            background-color: rgba(0,0,0,0.5);
-            justify-content: center;
-            align-items: center;
-        }
-        .modal-content {
-            background: #fff;
-            border-radius: 12px;
-            padding: 20px;
-            width: 90%;
-            max-width: 1000px;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
-            text-align: left;
-            position: relative;
-        }
-        .modal-content h3 { margin-top: 0; color: #007bff; text-align: center; }
-        .close { position: absolute; right: 15px; top: 10px; font-size: 26px; cursor: pointer; color: #555; }
-        .close:hover { color: #000; }
-        .modal-footer { display: flex; justify-content: flex-end; margin-top: 15px; }
-        .btn-close-modal {
-            padding: 10px 18px;
+            height: 40px;
+            padding: 0 16px;
             border-radius: 8px;
             border: none;
-            font-weight: 600;
+            font-weight: 800;
             cursor: pointer;
-            background-color: #007bff;
-            color: white;
-            transition: 0.2s;
         }
-        .btn-close-modal:hover { background-color: #0056b3; }
-        .restore-btn {
-            background-color: #28a745;
+
+        .btn-filter {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-reset {
+            background: #e5e7eb;
+            color: #111827;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            background: white;
+            border-radius: 14px;
+            box-shadow: 0 5px 18px rgba(0,0,0,0.10);
+        }
+
+        table {
+            width: 100%;
+            min-width: 1200px;
+            border-collapse: collapse;
+            background: white;
+        }
+
+        th, td {
+            padding: 12px 10px;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: center;
+            vertical-align: middle;
+            font-size: 14px;
+        }
+
+        th {
+            background: #007bff;
+            color: white;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        tr:hover {
+            background: #f8fbff;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: capitalize;
+        }
+
+        .status-connected {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .status-disconnected {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .reg-registered {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .reg-unregistered {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .copy-btn {
+            background: #16a34a;
             color: white;
             border: none;
-            padding: 5px 10px;
-            border-radius: 6px;
+            padding: 7px 10px;
+            border-radius: 7px;
+            font-size: 12px;
+            font-weight: 800;
             cursor: pointer;
-            font-size: 13px;
-            transition: 0.2s;
         }
-        .restore-btn:hover { background-color: #218838; }
+
+        .copy-btn:hover {
+            background: #15803d;
+        }
+
+        .no-data {
+            text-align: center;
+            color: #6b7280;
+            padding: 25px;
+            font-weight: 700;
+        }
+
+        .timestamp {
+            white-space: nowrap;
+            color: #475569;
+            font-size: 13px;
+        }
+
+        .unique-cell {
+            font-family: Consolas, monospace;
+            font-size: 12px;
+            word-break: break-all;
+        }
+
+        @media (max-width: 800px) {
+            header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .filter-form {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .filter-group {
+                width: 100%;
+            }
+        }
     </style>
 </head>
 <body>
 
 <header>
-    <h2>📋 Anomaly Reports - {{ lab_name }}</h2>
+    <h2><i class="fas fa-file-alt"></i> View Reports - {{ lab_name }}</h2>
+
     <div class="menu-buttons">
-        <button onclick="location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
-<button onclick="location.href='/comlab/{{ comlab_id }}'"><i class="fas fa-laptop"></i> Back to Devices</button>    </div>
+        <button onclick="location.href='/admin'">
+            <i class="fas fa-home"></i> Dashboard
+        </button>
+
+        <button onclick="location.href='/comlab/{{ comlab_id }}'">
+            <i class="fas fa-laptop"></i> Back to Devices
+        </button>
+
+        <button onclick="location.href='/comlab/{{ comlab_id }}/inventory'">
+            <i class="fas fa-briefcase"></i> Inventory
+        </button>
+    </div>
 </header>
+
+<div class="info-box">
+    <b>Purpose:</b> This page shows peripheral detection logs for the whole ComLab.
+    Registered and unregistered devices are both shown here.
+    Use the <b>Device Type</b>, <b>Brand/Vendor</b>, and <b>Unique ID</b> values when typing manual peripheral registration.
+</div>
 
 <form method="GET" class="filter-form">
     <div class="filter-group">
-        <label for="date">📅 Date:</label>
-        <input type="date" name="date" id="date" value="{{ request.args.get('date', '') }}">
+        <label for="date">Date</label>
+        <input type="date"
+               name="date"
+               id="date"
+               value="{{ request.args.get('date', '') }}">
     </div>
 
     <div class="filter-group">
-        <label for="device_unit">💻 Device Unit:</label>
+        <label for="device_unit">PC Unit</label>
         <select name="device_unit" id="device_unit">
-            <option value="">Select Device</option>
+            <option value="">All PCs</option>
             {% for device in devices %}
-                <option value="{{ device['tag'] }}" {% if request.args.get('device_unit') == device['tag'] %}selected{% endif %}>
+                <option value="{{ device['tag'] }}"
+                    {% if request.args.get('device_unit') == device['tag'] %}selected{% endif %}>
                     {{ device['tag'] }}
                 </option>
             {% endfor %}
@@ -242,151 +296,145 @@
     </div>
 
     <div class="filter-group">
-        <label for="anomaly_type">⚠️ Anomaly Type:</label>
-        <select name="anomaly_type" id="anomaly_type">
-            <option value="">Select Type</option>
-            {% for t in anomaly_types %}
-                <option value="{{ t }}" {% if request.args.get('anomaly_type') == t %}selected{% endif %}>{{ t }}</option>
+        <label for="event_type">Event Type</label>
+        <select name="event_type" id="event_type">
+            <option value="">All Events</option>
+            <option value="connected" {% if request.args.get('event_type') == 'connected' %}selected{% endif %}>
+                Connected
+            </option>
+            <option value="disconnected" {% if request.args.get('event_type') == 'disconnected' %}selected{% endif %}>
+                Disconnected
+            </option>
+        </select>
+    </div>
+
+    <div class="filter-group">
+        <label for="device_type">Device Type</label>
+        <select name="device_type" id="device_type">
+            <option value="">All Types</option>
+            {% for type in device_types %}
+                <option value="{{ type }}"
+                    {% if request.args.get('device_type') == type %}selected{% endif %}>
+                    {{ type }}
+                </option>
             {% endfor %}
         </select>
     </div>
 
-    <div class="filter-group filter-buttons">
-        <button type="submit" class="btn-filter">Filter</button>
-        <button type="reset" class="btn-reset" onclick="window.location.href=window.location.pathname;">Reset</button>
-    </div>
+    <button type="submit" class="btn-filter">
+        <i class="fas fa-filter"></i> Filter
+    </button>
 
-    <div>
-        <button type="button" class="history-btn" onclick="openDeletedReportsModal({{ comlab_id }})" title="View Deleted Reports">
-            <i class="fas fa-clock" style="font-size: 36px;"></i>
-        </button>
-    </div>
+    <button type="button"
+            class="btn-reset"
+            onclick="window.location.href=window.location.pathname">
+        Reset
+    </button>
 </form>
 
-<!-- Main Anomalies Table -->
-<table>
-    <thead>
-        <tr>
-            <th>Device ID</th>
-            <th>Assigned User</th>
-            <th>Anomaly Type</th>
-            <th>Details</th>
-            <th>Detected At</th>
-            <th>Device Unit</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% if anomalies %}
-            {% for row in anomalies %}
+<div class="table-wrapper">
+    <table>
+        <thead>
             <tr>
-                <td>{{ row[1] }}</td>
-                <td>{{ row[2] }}, {{ row[3] }}</td>
-                <td>{{ row[4] }}</td>
-                <td>{{ row[5] }}</td>
-                <td class="timestamp">{{ row[6] }}</td>
-                <td>{{ row['device_tag'] if row['device_tag'] else 'Unknown' }}</td>
+                <th>ID</th>
+                <th>Event</th>
+                <th>Registration</th>
+                <th>Device Type</th>
+                <th>Brand / Vendor</th>
+                <th>Product</th>
+                <th>Unique ID / Serial</th>
+                <th>PC Unit</th>
+                <th>User</th>
+                <th>Detected At</th>
+                <th>Use for Manual Add</th>
             </tr>
-            {% endfor %}
-        {% else %}
-            <tr>
-                <td colspan="7" class="no-data">No anomalies recorded yet</td>
-            </tr>
-        {% endif %}
-    </tbody>
-</table>
+        </thead>
 
-<!-- Deleted Anomalies Modal -->
-<div id="deletedModal" class="modal">
-    <div class="modal-content">
-        <span class="close" onclick="closeDeletedModal()">&times;</span>
-        <h3>🕒 Deleted Anomalies History</h3>
-        <table id="deletedTable">
-            <thead>
+        <tbody>
+            {% if logs %}
+                {% for log in logs %}
+                    <tr>
+                        <td>{{ log.id }}</td>
+
+                        <td>
+                            <span class="status-badge status-{{ log.event_type|lower }}">
+                                {{ log.event_type }}
+                            </span>
+                        </td>
+
+                        <td>
+                            <span class="status-badge reg-{{ log.registration_status|lower }}">
+                                {{ log.registration_status }}
+                            </span>
+                        </td>
+
+                        <td>{{ log.device_type or 'Unknown' }}</td>
+                        <td>{{ log.vendor or 'Unknown' }}</td>
+                        <td>{{ log.product or 'Unknown' }}</td>
+
+                        <td class="unique-cell">
+                            {{ log.unique_id or 'N/A' }}
+                        </td>
+
+                        <td>{{ log.device_name or log.pc_tag or 'Unknown PC' }}</td>
+
+                        <td>
+                            {% if log.username and log.username != 'No active user' %}
+                                {{ log.username }}
+                            {% elif log.user_id %}
+                                {{ log.user_id }}
+                            {% else %}
+                                No active user
+                            {% endif %}
+                        </td>
+
+                        <td class="timestamp">{{ log.timestamp }}</td>
+
+                        <td>
+                            <button class="copy-btn"
+                                    onclick='copyManualDetails({{ log|tojson|safe }})'>
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </td>
+                    </tr>
+                {% endfor %}
+            {% else %}
                 <tr>
-                    <th>ID</th>
-                    <th>Device ID</th>
-                    <th>Assigned Student</th>
-                    <th>Anomaly Type</th>
-                    <th>Details</th>
-                    <th>Detected At</th>
-                    <th>Device Unit</th>
-                    <th>Action</th>
+                    <td colspan="11" class="no-data">
+                        No peripheral logs yet. Scan or connect/disconnect a device first.
+                    </td>
                 </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
-        <div class="modal-footer">
-            <button class="btn-close-modal" onclick="closeDeletedModal()">Close</button>
-        </div>
-    </div>
+            {% endif %}
+        </tbody>
+    </table>
 </div>
 
 <script>
-function openDeletedReportsModal(comlabId) {
-    const modal = document.getElementById("deletedModal");
-    modal.style.display = "flex";
+function copyManualDetails(log) {
+    const text = [
+        "Use this for Manual Peripheral Registration:",
+        "",
+        "PC Unit: " + (log.device_name || log.pc_tag || ""),
+        "Device Type: " + (log.device_type || ""),
+        "Brand / Vendor: " + (log.vendor || "Unknown"),
+        "Product: " + (log.product || "Unknown"),
+        "Unique ID: " + (log.unique_id || ""),
+        "Serial Number: " + (log.unique_id || "")
+    ].join("\n");
 
-    fetch(`/api/deleted_anomalies?comlab_id=${comlabId}`)
-        .then(res => res.json())
-        .then(data => {
-            console.log("Deleted anomalies API response:", data); // debug
-
-            const tbody = document.querySelector("#deletedTable tbody");
-            tbody.innerHTML = "";
-
-            if (data.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="color:#888;">No deleted anomalies found</td></tr>`;
-                return;
-            }
-
-            data.forEach(a => {
-                const row = document.createElement("tr");
-                row.innerHTML = `
-                    <td>${a.id}</td>
-                    <td>${a.device_id}</td>
-                    <td>${a.student_name}</td>
-                    <td>${a.anomaly_type}</td>
-                    <td>${a.details}</td>
-                    <td class="timestamp">${a.detected_at}</td>
-                    <td>${a.device_tag}</td>
-                    <td><button class="restore-btn">Restore</button></td>
-                `;
-                tbody.appendChild(row);
-
-                row.querySelector(".restore-btn").addEventListener("click", () => {
-                    restoreAnomaly(a.id, row);
-                });
-            });
+    navigator.clipboard.writeText(text)
+        .then(() => {
+            alert("Device details copied. You can now type/paste them in Manual Add Peripheral.");
+        })
+        .catch(() => {
+            prompt("Copy these details:", text);
         });
 }
 
-function closeDeletedModal() {
-    document.getElementById("deletedModal").style.display = "none";
-}
-
-function restoreAnomaly(anomalyId, row) {
-    if (!confirm("Are you sure you want to restore this anomaly?")) return;
-
-    fetch("/api/restore_anomaly", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: anomalyId })
-    })
-    .then(res => res.json())
-    .then(resp => {
-        if (resp.success) {row.remove();
-        alert("Anomaly restored successfully.");
-        location.reload();}
-        else alert("Failed to restore anomaly.");
-    })
-    .catch(err => { console.error(err); alert("Error restoring anomaly."); });
-}
-
-// Close modal on click outside
-window.onclick = function(event) {
-    const modal = document.getElementById("deletedModal");
-    if (event.target === modal) modal.style.display = "none";
-}
+setInterval(() => {
+    window.location.reload();
+}, 8000);
 </script>
+
 </body>
 </html>

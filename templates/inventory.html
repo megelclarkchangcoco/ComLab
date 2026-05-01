@@ -970,8 +970,8 @@ input.inline-edit {
 <!-- ========== PC GRID / LIST ========== -->
 <div id="pcLayout" class="pc-layout grid-view">
 {% for pc in devices %}
-    <div class="pc-container pc-item" data-tag="{{ pc.tag }}">
-        <div class="pc-header" onclick="togglePC('{{ pc.tag }}', this)">
+    <div class="pc-container pc-item" data-tag="{{ pc.tag }}" data-pc-tag="{{ pc.tag }}">
+        <div class="pc-header" data-pc-tag="{{ pc.tag }}" onclick="togglePC('{{ pc.tag }}', this)">
             <div class="pc-number">{{ loop.index }}</div>
 
             <div class="pc-device-icon">
@@ -1104,12 +1104,12 @@ input.inline-edit {
                         <tbody>
                             {% if pc.peripherals %}
                                 {% for p in pc.peripherals %}
-                                <tr id="peripheral-{{ p.id }}" class="fade-in">
+                                <tr id="peripheral-{{ p.id }}" data-peripheral-id="{{ p.id }}" class="fade-in">
                                     <td>{{ p.name }}</td>
                                     <td>{{ p.brand }}</td>
                                     <td>{{ p.unique_id }}</td>
                                     <td>{{ p.serial_number }}</td>
-                                    <td><span class="status-pill status-{{ p.status }}">{{ p.status }}</span></td>
+                                    <td class="status-cell"><span class="status-pill status-{{ p.status|lower }}">{{ p.status }}</span></td>
                                     <td class="action-buttons">
                                         <button class="edit-btn" onclick="enableEdit('{{ p.id }}')">
                                             <i class="fas fa-pen"></i> Edit
@@ -1209,6 +1209,9 @@ function filterInventoryPCs() {
 function togglePC(tag, headerEl) {
     const content = document.getElementById("content-" + tag);
     if (!content) return;
+
+    setActiveScanPc(tag);
+    startAutoStatusScan(tag);
 
     const isOpen = content.style.display === "block";
     content.style.display = isOpen ? "none" : "block";
@@ -1387,15 +1390,23 @@ async function collectAuthorizedUsbDevices(extraDevice = null) {
     return Array.from(map.values());
 }
 
+let activeScanPcTag = null;
+
 function setActiveScanPc(pcTag) {
+    if (!pcTag) return;
+    activeScanPcTag = pcTag;
+
     try {
         localStorage.setItem("activeScanPc-" + currentLabId, pcTag);
     } catch (e) {}
 }
 
 function getActiveScanPc() {
+    if (activeScanPcTag) return activeScanPcTag;
+
     try {
-        return localStorage.getItem("activeScanPc-" + currentLabId);
+        activeScanPcTag = localStorage.getItem("activeScanPc-" + currentLabId);
+        return activeScanPcTag;
     } catch (e) {
         return null;
     }
@@ -1441,13 +1452,7 @@ async function syncWebUsbDevices(pcTag, options = {}) {
     }
 }
 
-async function syncActiveScanPc(options = {}) {
-    const pcTag = getActiveScanPc();
-    if (!pcTag) return;
-
-    await syncWebUsbDevices(pcTag, options);
-    await refreshPeripheralStatuses();
-}
+/* syncActiveScanPc is defined below in LIVE STATUS REFRESH + AUTO SCAN. */
 
 /* ============================================================
    WEBUSB SCAN
@@ -1459,6 +1464,7 @@ async function scanConnectedDevices(pcTag, button) {
     if (!box || !list) return;
 
     setActiveScanPc(pcTag);
+    startAutoStatusScan(pcTag);
     box.style.display = "block";
 
     if (button) {
@@ -1662,6 +1668,9 @@ function fillFormFromScannedDevice(pcTag, device) {
    REGISTER SCANNED DEVICE
    ============================================================ */
 async function registerScannedDevice(pcTag, device, button, card) {
+    setActiveScanPc(pcTag);
+    startAutoStatusScan(pcTag);
+
     if (!device || !device.unique_id) {
         alert("Invalid scanned device. Missing unique ID.");
         return;
@@ -1739,6 +1748,9 @@ async function registerScannedDevice(pcTag, device, button, card) {
    MANUAL ADD PERIPHERAL
    ============================================================ */
 function addPeripheralToPC(pcTag) {
+    setActiveScanPc(pcTag);
+    startAutoStatusScan(pcTag);
+
     const type = document.getElementById("type-" + pcTag)?.value?.trim();
     const brand = document.getElementById("brand-" + pcTag)?.value?.trim();
     const uniqueId = document.getElementById("unique_id-" + pcTag)?.value?.trim();
@@ -1798,6 +1810,7 @@ function addRowToTable(pcTag, p) {
 
     const row = tbody.insertRow();
     row.id = "peripheral-" + p.id;
+    row.dataset.peripheralId = p.id;
     row.className = "fade-in";
 
     row.innerHTML = `
@@ -1805,7 +1818,7 @@ function addRowToTable(pcTag, p) {
         <td>${escapeHtml(p.brand)}</td>
         <td>${escapeHtml(p.unique_id || "")}</td>
         <td>${escapeHtml(p.serial_number || "")}</td>
-        <td>${renderStatusPill(p.status || "connected")}</td>
+        <td class="status-cell">${renderStatusPill(p.status || "connected")}</td>
         <td class="action-buttons">
             <button class="edit-btn" onclick="enableEdit('${p.id}')"><i class="fas fa-pen"></i> Edit</button>
             <button class="save-btn" onclick="saveEdit('${p.id}')"><i class="fas fa-check"></i> Save</button>
@@ -1817,25 +1830,118 @@ function addRowToTable(pcTag, p) {
 }
 
 /* ============================================================
-   LIVE STATUS REFRESH
+   LIVE STATUS REFRESH + AUTO SCAN
+
+   This is the important part:
+   - When you open/select a PC, the page automatically calls /api/scan_devices.
+   - No need to press Scan Devices again.
+   - It updates connected, unplugged, replaced, missing, and faulty.
    ============================================================ */
+let autoStatusTimer = null;
+let autoStatusRunning = false;
+let lastStatusHash = "";
+
+function getRowByPeripheralId(id) {
+    return document.getElementById("peripheral-" + id) ||
+           document.querySelector(`[data-peripheral-id="${id}"]`);
+}
+
+function updatePeripheralRows(peripherals) {
+    if (!Array.isArray(peripherals)) return;
+
+    const hashParts = [];
+
+    peripherals.forEach(p => {
+        hashParts.push(`${p.id}:${p.status}:${p.remarks || ""}`);
+
+        const row = getRowByPeripheralId(p.id);
+        if (!row) return;
+
+        const statusCell = row.querySelector(".status-cell") || row.cells[4];
+
+        if (statusCell) {
+            statusCell.innerHTML = renderStatusPill(p.status);
+        }
+    });
+
+    lastStatusHash = hashParts.join("|");
+}
+
 async function refreshPeripheralStatuses() {
     try {
-        const res = await fetch(`/api/peripheral_statuses/${currentLabId}`);
+        const res = await fetch(`/api/peripheral_statuses/${currentLabId}`, {
+            method: "GET",
+            headers: { "Accept": "application/json" }
+        });
+
         const data = await res.json();
 
         if (!data.success) return;
 
-        data.peripherals.forEach(p => {
-            const row = document.getElementById("peripheral-" + p.id);
-            if (!row) return;
-
-            const statusCell = row.cells[4];
-            if (statusCell) statusCell.innerHTML = renderStatusPill(p.status);
-        });
+        updatePeripheralRows(data.peripherals || []);
     } catch (e) {
         console.error("[LIVE STATUS ERROR]", e);
     }
+}
+
+async function runServerAutoScan(pcTag) {
+    if (!pcTag) return;
+    if (autoStatusRunning) return;
+
+    autoStatusRunning = true;
+
+    try {
+        const url = `/api/scan_devices?lab_id=${encodeURIComponent(currentLabId)}&pc_tag=${encodeURIComponent(pcTag)}`;
+
+        const res = await fetch(url, {
+            method: "GET",
+            headers: { "Accept": "application/json" }
+        });
+
+        const data = await res.json();
+
+        if (!data.success) {
+            console.warn("[AUTO SERVER SCAN ERROR]", data.message);
+            return;
+        }
+
+        if (data.peripherals) {
+            updatePeripheralRows(data.peripherals);
+        } else {
+            await refreshPeripheralStatuses();
+        }
+    } catch (e) {
+        console.warn("[AUTO SERVER SCAN FAILED]", e);
+    } finally {
+        autoStatusRunning = false;
+    }
+}
+
+function startAutoStatusScan(pcTag) {
+    if (!pcTag) return;
+
+    setActiveScanPc(pcTag);
+
+    if (autoStatusTimer) {
+        clearInterval(autoStatusTimer);
+    }
+
+    runServerAutoScan(pcTag);
+
+    autoStatusTimer = setInterval(() => {
+        runServerAutoScan(pcTag);
+    }, 1000);
+
+    console.log("[AUTO STATUS SCAN] Started for", pcTag);
+}
+
+async function syncActiveScanPc(options = {}) {
+    const pcTag = getActiveScanPc();
+    if (!pcTag) return;
+
+    await syncWebUsbDevices(pcTag, options);
+    await runServerAutoScan(pcTag);
+    await refreshPeripheralStatuses();
 }
 
 /* ============================================================
@@ -1965,12 +2071,32 @@ function deletePeripheral(id) {
 /* ============================================================
    AUTO-START
    ============================================================ */
+
+document.addEventListener("click", function (event) {
+    const pcCard = event.target.closest("[data-pc-tag], [data-tag]");
+
+    if (!pcCard) return;
+
+    const pcTag = pcCard.dataset.pcTag || pcCard.dataset.tag;
+
+    if (!pcTag) return;
+
+    setActiveScanPc(pcTag);
+    startAutoStatusScan(pcTag);
+});
+
 document.addEventListener("DOMContentLoaded", function () {
     const savedView = localStorage.getItem("inventoryView-" + currentLabId) || "grid";
     setInventoryView(savedView);
 
+    const savedPc = getActiveScanPc();
+
+    if (savedPc) {
+        startAutoStatusScan(savedPc);
+    }
+
     refreshPeripheralStatuses();
-    setInterval(refreshPeripheralStatuses, 3000);
+    setInterval(refreshPeripheralStatuses, 1000);
 
     if (navigator.usb) {
         navigator.usb.addEventListener("connect", (event) => {
