@@ -104,6 +104,36 @@ header h2{margin:0;font-size:24px;letter-spacing:0.5px;}
     font-weight:500;
 }
 
+.notif-clickable{
+    cursor:pointer;
+    transition:0.2s;
+}
+
+.notif-clickable:hover{
+    background:#f3f7ff;
+}
+
+.notif-title{
+    font-size:15px;
+    font-weight:700;
+    color:#222;
+    margin-bottom:5px;
+    text-transform:capitalize;
+}
+
+.notif-line{
+    font-size:13px;
+    color:#333;
+    line-height:1.45;
+}
+
+.notif-empty{
+    padding:15px;
+    color:#666;
+    font-size:14px;
+    text-align:center;
+}
+
 /* ACTION BUTTONS */
 .action-area{
     margin-bottom:35px;display:flex;justify-content:center;gap:15px;
@@ -313,95 +343,151 @@ function approveLogout(id) {
 <script>
 // ------------------- NOTIFICATION SYSTEM -------------------
 
-let notifList = JSON.parse(localStorage.getItem("alerts") || "[]");
-let lastCleared = localStorage.getItem("alerts_cleared") === "1";
+let notifList = JSON.parse(localStorage.getItem("comlab_alerts") || "[]");
+let readAlertIds = JSON.parse(localStorage.getItem("comlab_read_alert_ids") || "[]");
 
-// ------------ RENDER UI ----------------
+function getAlertIcon(alertType) {
+    alertType = (alertType || "").toLowerCase();
+
+    if (alertType === "missing") return "🕵️";
+    if (alertType === "faulty") return "⚠️";
+    if (alertType === "replaced") return "🔄";
+
+    return "🚨";
+}
+
+function escapeHTML(value) {
+    return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+function saveNotifications() {
+    localStorage.setItem("comlab_alerts", JSON.stringify(notifList));
+    localStorage.setItem("comlab_read_alert_ids", JSON.stringify(readAlertIds));
+}
+
+function getUnreadCount() {
+    return notifList.filter(n => !readAlertIds.includes(String(n.id))).length;
+}
+
 function renderNotifications() {
     const panel = document.getElementById("notif-panel");
     const badge = document.getElementById("notif-badge");
 
     panel.innerHTML = "";
 
-
     if (notifList.length === 0) {
-        panel.innerHTML += `<div class="notif-item"><div class="notif-text">No alerts</div></div>`;
+        panel.innerHTML = `<div class="notif-empty">No alerts</div>`;
         badge.style.display = "none";
         return;
     }
 
-    // SHOW ALERT ITEMS
     notifList.forEach(n => {
+        const icon = getAlertIcon(n.alert_type);
+        const alertTitle = escapeHTML(n.alert_type || "Alert");
+        const device = escapeHTML(n.device || "Unknown Device");
+        const comlab = escapeHTML(n.comlab_id || "Unknown");
+        const pc = escapeHTML(n.pc || "Unknown PC");
+        const user = escapeHTML(n.user || "Unknown User");
+
         panel.innerHTML += `
-            <div class="notif-item notif-clickable" onclick="openAlertsPage(${n.comlab_id})">
-                <div class="notif-icon">⚠️</div>
-                <div class="notif-text">${n.text}</div>
+            <div class="notif-item notif-clickable" onclick="openAlertsPage('${comlab}')">
+                <div class="notif-icon">${icon}</div>
+
+                <div class="notif-text">
+                    <div class="notif-title">${icon} ${alertTitle}</div>
+                    <div class="notif-line"><b>Device:</b> ${device}</div>
+                    <div class="notif-line"><b>Comlab:</b> ${comlab}</div>
+                    <div class="notif-line"><b>PC:</b> ${pc}</div>
+                    <div class="notif-line"><b>User:</b> ${user}</div>
+                </div>
             </div>
         `;
     });
 
-    // SHOW BADGE ONLY IF NOT CLEARED
-    if (!lastCleared) {
-        badge.innerText = notifList.length;
+    const unreadCount = getUnreadCount();
+
+    if (unreadCount > 0) {
+        badge.innerText = unreadCount;
         badge.style.display = "inline-block";
     } else {
         badge.style.display = "none";
     }
 }
 
-// ---------- CLICK ALERT → OPEN FLASK ROUTE ----------
-function openAlertsPage(comlab_id) {
-    window.location.href = `/comlab/${comlab_id}/inventory/view_alerts`;
+function openAlertsPage(comlabId) {
+    window.location.href = `/comlab/${comlabId}/inventory/view_alerts`;
 }
 
-// -------------- CLEAR ALL ----------------
-function markAllRead() {
-    lastCleared = true;
-    localStorage.setItem("alerts_cleared", "1");
+function markCurrentAlertsAsRead() {
+    notifList.forEach(n => {
+        const alertId = String(n.id);
 
-    notifList = [];
-    localStorage.setItem("alerts", JSON.stringify(notifList));
+        if (!readAlertIds.includes(alertId)) {
+            readAlertIds.push(alertId);
+        }
+    });
 
+    saveNotifications();
     renderNotifications();
 }
 
-// -------------- TOGGLE DROPDOWN --------------
 document.getElementById("notif-icon").onclick = () => {
     const panel = document.getElementById("notif-panel");
 
-    panel.style.display = (panel.style.display === "block") ? "none" : "block";
+    panel.style.display = panel.style.display === "block" ? "none" : "block";
 
-    // AUTO-CLEAR COUNT WHEN OPENED
-    lastCleared = true;
-    localStorage.setItem("alerts_cleared", "1");
-
-    renderNotifications();
+    if (panel.style.display === "block") {
+        markCurrentAlertsAsRead();
+    }
 };
 
-// ---------- SSE EVENT LISTENER -------------
 const evtSource = new EventSource("/alerts/stream");
 
 evtSource.onmessage = function(e) {
-    const [comlab_id, serial, alert_type] = e.data.split("|");
+    let alertData = null;
 
-    let text = "";
-    if(alert_type === "faulty") text = `Device ${serial} is FAULTY`;
-    if(alert_type === "missing") text = `Device ${serial} is MISSING more than 10 minutes`;
-    if(alert_type === "replaced") text = `Device ${serial} is being REPLACED`;
-
-    // Add only if not duplicate
-    const exists = notifList.some(n => n.text === text && n.comlab_id == comlab_id);
-    if (!exists) {
-        notifList.unshift({comlab_id: comlab_id, text: text});
-        localStorage.setItem("alerts", JSON.stringify(notifList));
-        lastCleared = false;
-        localStorage.setItem("alerts_cleared", "0");
+    try {
+        alertData = JSON.parse(e.data);
+    } catch (error) {
+        console.error("Invalid alert data:", e.data);
+        return;
     }
 
-    renderNotifications();
+    if (!alertData || !alertData.id) return;
+
+    const alertId = String(alertData.id);
+
+    const exists = notifList.some(n => String(n.id) === alertId);
+
+    if (!exists) {
+        notifList.unshift({
+            id: alertId,
+            alert_type: alertData.alert_type || "alert",
+            device: alertData.device || "Unknown Device",
+            comlab_id: alertData.comlab_id || "Unknown",
+            pc: alertData.pc || "Unknown PC",
+            user: alertData.user || "Unknown User",
+            timestamp: alertData.timestamp || ""
+        });
+
+        if (notifList.length > 30) {
+            notifList = notifList.slice(0, 30);
+        }
+
+        saveNotifications();
+        renderNotifications();
+    }
 };
 
-// Initial load
+evtSource.onerror = function(error) {
+    console.error("Notification stream connection error:", error);
+};
+
 renderNotifications();
 </script>
 

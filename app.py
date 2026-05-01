@@ -1501,23 +1501,72 @@ def view_alerts(comlab_id):
 
 @app.route("/alerts/stream")
 def alerts_stream():
+    import json
+
     def event_stream():
         last_id = 0
+
         while True:
-            with sqlite3.connect(DB_FILE) as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT id, serial_number, alert_type, location, timestamp
-                    FROM peripheral_alerts
-                    WHERE id > ? AND deleted = 0
-                    ORDER BY id ASC
-                """, (last_id,))
-                rows = cur.fetchall()
-                for row in rows:
-                    last_id = row[0]
-                    yield f"data: {row[3]}|{row[1]}|{row[2]}\n\n"  # location|serial_number|alert_type
-            time.sleep(2)  # check every 2 seconds
-    return Response(event_stream(), mimetype="text/event-stream")
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+
+                    cur.execute("""
+                        SELECT
+                            a.id,
+                            a.alert_type,
+                            a.location,
+                            a.device_name,
+                            a.device_type,
+                            a.user_id,
+                            a.timestamp,
+                            COALESCE(
+                                NULLIF(u.name, ''),
+                                NULLIF(s.student_name, ''),
+                                NULLIF(a.user_id, ''),
+                                'Unknown User'
+                            ) AS student_name
+                        FROM peripheral_alerts a
+                        LEFT JOIN users u
+                            ON u.username = a.user_id
+                        LEFT JOIN active_sessions s
+                            ON s.pc_tag = a.device_name
+                        WHERE a.id > ?
+                          AND a.deleted = 0
+                        ORDER BY a.id ASC
+                    """, (last_id,))
+
+                    rows = cur.fetchall()
+
+                    for row in rows:
+                        last_id = row["id"]
+
+                        payload = {
+                            "id": row["id"],
+                            "alert_type": row["alert_type"] or "unknown",
+                            "comlab_id": row["location"] or "Unknown",
+                            "pc": row["device_name"] or "Unknown PC",
+                            "device": row["device_type"] or "Unknown Device",
+                            "user": row["student_name"] or "Unknown User",
+                            "timestamp": row["timestamp"] or ""
+                        }
+
+                        yield f"data: {json.dumps(payload)}\n\n"
+
+            except Exception as e:
+                print("[ALERT STREAM ERROR]", e)
+
+            time.sleep(2)
+
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.route("/comlab/<int:comlab_id>/inventory/summary")
 def summary(comlab_id):
