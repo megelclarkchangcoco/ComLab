@@ -349,9 +349,9 @@ let readAlertIds = JSON.parse(localStorage.getItem("comlab_read_alert_ids") || "
 function getAlertIcon(alertType) {
     alertType = (alertType || "").toLowerCase();
 
-    if (alertType === "missing") return "🕵️";
-    if (alertType === "faulty") return "⚠️";
-    if (alertType === "replaced") return "🔄";
+    if (alertType === "missing") return "";
+    if (alertType === "faulty") return "";
+    if (alertType === "replaced") return "";
 
     return "🚨";
 }
