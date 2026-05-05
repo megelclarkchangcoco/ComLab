@@ -1565,34 +1565,157 @@ def view_alerts(comlab_id):
     except sqlite3.Error as e:
         return f"<h1>Database Error:</h1><p>{str(e)}</p>", 500
 
+def ensure_peripheral_alerts_table():
+    """
+    Makes sure peripheral_alerts has the columns needed by
+    View Alerts and the dashboard notification bell.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS peripheral_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    serial_number TEXT,
+                    alert_type TEXT,
+                    timestamp TEXT,
+                    device_name TEXT,
+                    location TEXT,
+                    event_type TEXT,
+                    device_type TEXT,
+                    user_id TEXT,
+                    deleted INTEGER DEFAULT 0
+                )
+            """)
+
+            cur.execute("PRAGMA table_info(peripheral_alerts)")
+            columns = [row[1] for row in cur.fetchall()]
+
+            required_columns = {
+                "serial_number": "TEXT",
+                "alert_type": "TEXT",
+                "timestamp": "TEXT",
+                "device_name": "TEXT",
+                "location": "TEXT",
+                "event_type": "TEXT",
+                "device_type": "TEXT",
+                "user_id": "TEXT",
+                "deleted": "INTEGER DEFAULT 0"
+            }
+
+            for column_name, column_type in required_columns.items():
+                if column_name not in columns:
+                    cur.execute(f"ALTER TABLE peripheral_alerts ADD COLUMN {column_name} {column_type}")
+
+            conn.commit()
+    except Exception as e:
+        print("[ALERT TABLE MIGRATION ERROR]", e)
+
+
+def build_alert_payload(row):
+    """
+    Converts a peripheral_alerts row into the JSON format expected by
+    admin_dashboard.html.
+    """
+    return {
+        "id": str(row["id"]),
+        "alert_type": row["alert_type"] or "alert",
+        "device": row["device_type"] or row["serial_number"] or "Unknown Device",
+        "device_type": row["device_type"] or "Unknown Device",
+        "serial_number": row["serial_number"] or "",
+        "comlab_id": str(row["location"] or ""),
+        "pc": row["device_name"] or "Unknown PC",
+        "user": row["user_id"] or "No active user",
+        "timestamp": row["timestamp"] or "",
+        "event_type": row["event_type"] or ""
+    }
+
+
+@app.route("/alerts/latest")
+def alerts_latest():
+    """
+    Loads recent alerts when the dashboard opens.
+    This fixes the case where the device became faulty/missing/replaced
+    before the browser connected to /alerts/stream.
+    """
+    ensure_peripheral_alerts_table()
+
+    try:
+        limit = int(request.args.get("limit", 30))
+    except Exception:
+        limit = 30
+
+    limit = max(1, min(limit, 100))
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, location, serial_number, alert_type,
+                       device_name, device_type, user_id, timestamp, event_type
+                FROM peripheral_alerts
+                WHERE COALESCE(deleted, 0) = 0
+                  AND LOWER(alert_type) IN ('faulty', 'missing', 'replaced')
+                ORDER BY datetime(timestamp) DESC, id DESC
+                LIMIT ?
+            """, (limit,))
+
+            alerts = [build_alert_payload(row) for row in cur.fetchall()]
+
+        return jsonify(alerts)
+
+    except Exception as e:
+        print("[ALERTS LATEST ERROR]", e)
+        return jsonify([])
+
+
 @app.route('/alerts/stream')
 def alerts_stream():
+    """
+    Realtime notification stream for the admin dashboard.
+    Sends JSON, not the old location|serial|alert_type text format.
+    """
+    ensure_peripheral_alerts_table()
+
     def event_stream():
         last_id = 0
 
         while True:
-            conn = sqlite3.connect('database.db')
-            cur = conn.cursor()
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
 
-            cur.execute("""
-                SELECT id, location, serial_number, alert_type
-                FROM peripheral_alerts
-                WHERE id > ? AND deleted = 0
-                ORDER BY id ASC
-            """, (last_id,))
+                    cur.execute("""
+                        SELECT id, location, serial_number, alert_type,
+                               device_name, device_type, user_id, timestamp, event_type
+                        FROM peripheral_alerts
+                        WHERE id > ?
+                          AND COALESCE(deleted, 0) = 0
+                          AND LOWER(alert_type) IN ('faulty', 'missing', 'replaced')
+                        ORDER BY id ASC
+                    """, (last_id,))
 
-            rows = cur.fetchall()
-            conn.close()
+                    rows = cur.fetchall()
 
-            for row in rows:
-                alert_id, location, serial_number, alert_type = row
-                last_id = alert_id
+                for row in rows:
+                    last_id = int(row["id"])
+                    payload = build_alert_payload(row)
+                    yield f"data: {json.dumps(payload)}\n\n"
 
-                yield f"data: {location}|{serial_number}|{alert_type}\n\n"
+                time.sleep(2)
 
-            time.sleep(2)
+            except GeneratorExit:
+                break
+            except Exception as e:
+                print("[ALERT STREAM ERROR]", e)
+                time.sleep(0.5)
 
-    return Response(event_stream(), mimetype='text/event-stream')
+    response = Response(event_stream(), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
 
 @app.route("/comlab/<int:comlab_id>/inventory/summary")
 def summary(comlab_id):
@@ -2617,26 +2740,66 @@ def embedded_alert_exists(cur, serial_number, alert_type, location=None, device_
 
 
 def embedded_insert_alert_once(cur, serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id=None):
+    """
+    Inserts alerts for faulty/missing/replaced.
+
+    Fix:
+    - Old code blocked the same alert forever while deleted = 0.
+    - That made the device status become faulty, but no new notification row appeared.
+    - This version only blocks the exact same alert for a few seconds to avoid spam.
+    """
     if not serial_number or not alert_type:
-        return
+        return None
 
-    if embedded_alert_exists(cur, serial_number, alert_type, location, device_name):
-        return
+    ensure_peripheral_alerts_table()
 
-    cur.execute("""
-        INSERT INTO peripheral_alerts
-        (serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        serial_number,
-        alert_type,
-        timestamp,
-        device_name,
-        str(location),
-        event_type,
-        device_type,
-        user_id
-    ))
+    try:
+        from datetime import timedelta
+        recent_cutoff = (datetime.now() - timedelta(seconds=8)).strftime("%Y-%m-%d %H:%M:%S")
+
+        cur.execute("""
+            SELECT id
+            FROM peripheral_alerts
+            WHERE serial_number = ?
+              AND alert_type = ?
+              AND CAST(location AS TEXT) = CAST(? AS TEXT)
+              AND device_name = ?
+              AND COALESCE(deleted, 0) = 0
+              AND datetime(timestamp) >= datetime(?)
+            ORDER BY id DESC
+            LIMIT 1
+        """, (
+            serial_number,
+            alert_type,
+            str(location),
+            device_name,
+            recent_cutoff
+        ))
+
+        recent_duplicate = cur.fetchone()
+        if recent_duplicate:
+            return recent_duplicate[0]
+
+        cur.execute("""
+            INSERT INTO peripheral_alerts
+            (serial_number, alert_type, timestamp, device_name, location, event_type, device_type, user_id, deleted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (
+            serial_number,
+            alert_type,
+            timestamp,
+            device_name,
+            str(location),
+            event_type,
+            device_type,
+            user_id
+        ))
+
+        return cur.lastrowid
+
+    except Exception as e:
+        print("[INSERT ALERT ERROR]", e)
+        return None
 
 def embedded_insert_usb_event(cur, event_type, device, pc_tag, lab_id):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
