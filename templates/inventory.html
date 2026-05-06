@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1417,6 +1418,32 @@ async function syncWebUsbDevices(pcTag, options = {}) {
 
     try {
         const devices = await collectAuthorizedUsbDevices(options.extraDevice || null);
+        const allowEmptyUpdate = options.forceEmpty === true || options.allowEmptyUpdate === true;
+
+        /*
+           IMPORTANT FIX FOR RENDER:
+           Browser WebUSB can return an empty list when:
+           - the user has not granted USB permission yet
+           - the browser cannot see HID devices like mouse/keyboard
+           - the device popup was cancelled
+
+           Do not send empty auto-sync results to the backend.
+           Empty results were being interpreted as unplugged, then after
+           repeated cycles the device became faulty.
+        */
+        if (devices.length === 0 && !allowEmptyUpdate) {
+            if (!options.silent) {
+                console.warn("[WEBUSB SYNC SKIPPED] Empty WebUSB list was not sent.");
+            }
+
+            return {
+                success: true,
+                skipped: true,
+                devices: [],
+                peripherals: null,
+                message: "Empty WebUSB sync skipped."
+            };
+        }
 
         const res = await fetch("/api/webusb_sync", {
             method: "POST",
@@ -1424,7 +1451,8 @@ async function syncWebUsbDevices(pcTag, options = {}) {
             body: JSON.stringify({
                 lab_id: currentLabId,
                 pc_tag: pcTag,
-                devices: devices
+                devices: devices,
+                allow_empty_update: allowEmptyUpdate
             })
         });
 
@@ -1436,13 +1464,7 @@ async function syncWebUsbDevices(pcTag, options = {}) {
         }
 
         if (data.peripherals) {
-            data.peripherals.forEach(p => {
-                const row = document.getElementById("peripheral-" + p.id);
-                if (!row) return;
-
-                const statusCell = row.cells[4];
-                if (statusCell) statusCell.innerHTML = renderStatusPill(p.status);
-            });
+            updatePeripheralRows(data.peripherals);
         }
 
         return data;
@@ -1860,7 +1882,7 @@ function updatePeripheralRows(peripherals) {
         const statusCell = row.querySelector(".status-cell") || row.cells[4];
 
         if (statusCell) {
-            statusCell.innerHTML = renderStatusPill(p.status);
+            statusCell.innerHTML = renderStatusPill(p.status || "connected");
         }
     });
 
@@ -1891,27 +1913,16 @@ async function runServerAutoScan(pcTag) {
     autoStatusRunning = true;
 
     try {
-        const url = `/api/scan_devices?lab_id=${encodeURIComponent(currentLabId)}&pc_tag=${encodeURIComponent(pcTag)}`;
-
-        const res = await fetch(url, {
-            method: "GET",
-            headers: { "Accept": "application/json" }
-        });
-
-        const data = await res.json();
-
-        if (!data.success) {
-            console.warn("[AUTO SERVER SCAN ERROR]", data.message);
-            return;
-        }
-
-        if (data.peripherals) {
-            updatePeripheralRows(data.peripherals);
-        } else {
-            await refreshPeripheralStatuses();
-        }
+        /*
+           IMPORTANT FIX FOR RENDER:
+           Do not repeatedly call /api/scan_devices from auto-refresh.
+           On Render, the server cannot read classroom USB hardware.
+           Calling scan_devices every second can save an empty device list,
+           causing connected -> unplugged -> faulty.
+        */
+        await refreshPeripheralStatuses();
     } catch (e) {
-        console.warn("[AUTO SERVER SCAN FAILED]", e);
+        console.warn("[AUTO STATUS REFRESH FAILED]", e);
     } finally {
         autoStatusRunning = false;
     }
@@ -1928,11 +1939,12 @@ function startAutoStatusScan(pcTag) {
 
     runServerAutoScan(pcTag);
 
+    // Slower refresh. This only updates the UI status pills now.
     autoStatusTimer = setInterval(() => {
         runServerAutoScan(pcTag);
-    }, 1000);
+    }, 3000);
 
-    console.log("[AUTO STATUS SCAN] Started for", pcTag);
+    console.log("[AUTO STATUS REFRESH] Started for", pcTag);
 }
 
 async function syncActiveScanPc(options = {}) {
@@ -1940,7 +1952,6 @@ async function syncActiveScanPc(options = {}) {
     if (!pcTag) return;
 
     await syncWebUsbDevices(pcTag, options);
-    await runServerAutoScan(pcTag);
     await refreshPeripheralStatuses();
 }
 
@@ -2096,24 +2107,27 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     refreshPeripheralStatuses();
-    setInterval(refreshPeripheralStatuses, 1000);
+    setInterval(refreshPeripheralStatuses, 3000);
 
     if (navigator.usb) {
         navigator.usb.addEventListener("connect", (event) => {
             syncActiveScanPc({ silent: true, extraDevice: event.device });
             setTimeout(() => syncActiveScanPc({ silent: true, extraDevice: event.device }), 1200);
-            setTimeout(() => syncActiveScanPc({ silent: true, extraDevice: event.device }), 3500);
         });
 
         navigator.usb.addEventListener("disconnect", () => {
-            syncActiveScanPc({ silent: true });
-            setTimeout(() => syncActiveScanPc({ silent: true }), 1200);
-            setTimeout(() => syncActiveScanPc({ silent: true }), 3500);
+            /*
+               Only an actual browser USB disconnect event is allowed to send
+               an empty update. Normal timers must not send empty updates.
+            */
+            syncActiveScanPc({ silent: true, forceEmpty: true });
+            setTimeout(() => syncActiveScanPc({ silent: true, forceEmpty: true }), 1200);
         });
 
-        setInterval(() => {
-            syncActiveScanPc({ silent: true });
-        }, 3000);
+        /*
+           No automatic WebUSB sync interval here.
+           It caused empty sync loops on Render and made devices faulty.
+        */
     }
 });
 </script>

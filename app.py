@@ -3524,23 +3524,21 @@ def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
 
 
 @app.route("/api/webusb_sync", methods=["POST"])
-
-@app.route("/api/webusb_sync", methods=["POST"])
 def api_webusb_sync():
     """
     Browser/WebUSB status sync.
 
-    This route lets inventory.html update device statuses without running
-    a separate DetectionAgent. The browser sends the currently authorized
-    WebUSB devices for the clicked PC. The server compares that current list
-    with the previous list and updates connected, unplugged, missing, faulty,
-    and replaced.
+    FIX FOR RENDER:
+    - Empty browser WebUSB lists are ignored by default.
+    - Empty lists are only saved when allow_empty_update=True.
+    - This prevents false connected -> unplugged -> faulty loops.
     """
     data = request.get_json(silent=True) or {}
 
     lab_id = str(data.get("lab_id") or "").strip()
     pc_tag = str(data.get("pc_tag") or "").strip()
     devices = data.get("devices", [])
+    allow_empty_update = bool(data.get("allow_empty_update") is True)
 
     if not lab_id or not pc_tag:
         return jsonify({
@@ -3561,7 +3559,8 @@ def api_webusb_sync():
                 SELECT id
                 FROM devices
                 WHERE tag = ?
-                  AND (location = ? OR comlab_id = ?)
+                  AND (CAST(location AS TEXT) = CAST(? AS TEXT)
+                       OR CAST(comlab_id AS TEXT) = CAST(? AS TEXT))
                 LIMIT 1
             """, (pc_tag, lab_id, lab_id))
             pc_exists = cur.fetchone()
@@ -3598,8 +3597,16 @@ def api_webusb_sync():
             })
 
         ensure_detected_devices_table()
+        ensure_peripheral_status_columns()
         remember_scanner_target(lab_id, pc_tag)
-        embedded_save_detected_devices_and_update_status(lab_id, pc_tag, cleaned_devices)
+
+        skipped_empty_update = False
+
+        if cleaned_devices or allow_empty_update:
+            embedded_save_detected_devices_and_update_status(lab_id, pc_tag, cleaned_devices)
+        else:
+            skipped_empty_update = True
+            print(f"[WEBUSB SYNC SKIPPED EMPTY] Lab {lab_id} | {pc_tag}")
 
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
@@ -3608,7 +3615,7 @@ def api_webusb_sync():
             cur.execute("""
                 SELECT id, name, assigned_pc, status, remarks
                 FROM peripherals
-                WHERE lab_id = ?
+                WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND assigned_pc = ?
                 ORDER BY name ASC
             """, (lab_id, pc_tag))
@@ -3618,7 +3625,7 @@ def api_webusb_sync():
                 SELECT id, lab_id, pc_tag, unique_id, name, device_type,
                        vendor, product, serial_number, status, last_seen
                 FROM detected_devices
-                WHERE lab_id = ?
+                WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND pc_tag = ?
                   AND status = 'connected'
                 ORDER BY datetime(last_seen) DESC
@@ -3627,7 +3634,8 @@ def api_webusb_sync():
 
         return jsonify({
             "success": True,
-            "message": "WebUSB status synced.",
+            "message": "WebUSB status synced." if not skipped_empty_update else "Empty WebUSB sync skipped.",
+            "skipped_empty_update": skipped_empty_update,
             "pc_tag": pc_tag,
             "lab_id": lab_id,
             "device_count": len(cleaned_devices),
@@ -3641,7 +3649,6 @@ def api_webusb_sync():
             "success": False,
             "message": str(e)
         }), 500
-
 
 @app.route("/api/agent/heartbeat", methods=["POST"])
 def agent_heartbeat():
@@ -3732,10 +3739,11 @@ def scan_devices():
     """
     Manual scan endpoint.
 
-    Important fixes:
-    - Saves the selected PC as scanner target for automatic background scanning.
-    - Saves scan results even if live_devices is empty.
-      Empty scan is needed to update connected -> unplugged/missing/faulty.
+    FIX FOR RENDER:
+    - Windows/local app.py can scan real plugged USB devices.
+    - Render/Linux cannot read the user's classroom USB devices.
+    - Therefore Render must NOT save an empty live_devices list.
+      Empty save was causing connected -> unplugged -> faulty.
     """
     lab_id = request.args.get("lab_id")
     pc_tag = request.args.get("pc_tag")
@@ -3751,24 +3759,26 @@ def scan_devices():
         ensure_peripheral_status_columns()
         remember_scanner_target(lab_id, pc_tag)
 
-        live_devices = []
+        source = "saved_devices_only"
 
-        # Local live scan only works when Flask runs on the actual Windows PC.
         if os.name == "nt":
             try:
                 live_devices = embedded_get_connected_devices()
-                print(f"[LIVE SCAN] Requested PC: {pc_tag} | Lab: {lab_id}")
-                print(f"[LIVE SCAN] Found physical devices: {len(live_devices)}")
+                print(f"[LOCAL LIVE SCAN] Requested PC: {pc_tag} | Lab: {lab_id}")
+                print(f"[LOCAL LIVE SCAN] Found physical devices: {len(live_devices)}")
                 for device in live_devices:
-                    print("[LIVE SCAN DEVICE]", device)
+                    print("[LOCAL LIVE SCAN DEVICE]", device)
+
+                # On local Windows, empty live_devices is valid and means unplugged.
+                embedded_save_detected_devices_and_update_status(lab_id, pc_tag, live_devices)
+                source = "local_live_scan"
+
             except Exception as scan_error:
                 print("[LOCAL LIVE SCAN ERROR]", scan_error)
-                live_devices = []
-
-        # IMPORTANT:
-        # Always save, even if live_devices is empty.
-        # Otherwise unplugged/missing will not update.
-        embedded_save_detected_devices_and_update_status(lab_id, pc_tag, live_devices)
+        else:
+            # Render/Linux cannot scan USB hardware from the user's PC.
+            # Never save empty data here.
+            print(f"[RENDER READ-ONLY SCAN] Lab {lab_id} | {pc_tag}")
 
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -3788,7 +3798,7 @@ def scan_devices():
                 status,
                 last_seen
             FROM detected_devices
-            WHERE lab_id = ?
+            WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
               AND pc_tag = ?
               AND status = 'connected'
             ORDER BY datetime(last_seen) DESC
@@ -3809,7 +3819,7 @@ def scan_devices():
                 disconnected_at,
                 status_updated_at
             FROM peripherals
-            WHERE lab_id = ?
+            WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
               AND assigned_pc = ?
             ORDER BY name ASC
         """, (str(lab_id), pc_tag))
@@ -3828,8 +3838,8 @@ def scan_devices():
             "devices": devices,
             "peripherals": peripherals,
             "status_hash": status_hash,
-            "message": "Scan complete. Automatic scanner target saved.",
-            "source": "local_live_scan" if os.name == "nt" else "agent_saved_devices"
+            "message": "Scan complete.",
+            "source": source
         })
 
     except Exception as e:
@@ -3838,7 +3848,6 @@ def scan_devices():
             "success": False,
             "message": str(e)
         }), 500
-
 
 @app.route("/api/register_scanned_peripheral", methods=["POST"])
 def register_scanned_peripheral():
@@ -4182,8 +4191,13 @@ def api_peripheral_statuses(comlab_id):
 
 
 def embedded_detection_loop():
+    if os.name != "nt":
+        print("[EMBEDDED AGENT] Disabled. This server is not Windows, so USB scanning is not available here.")
+        return
+
     print("[EMBEDDED AGENT] Starting physical device scanner...")
     ensure_detected_devices_table()
+    ensure_peripheral_status_columns()
 
     while True:
         lab_id, pc_tag = embedded_identify_current_pc()
@@ -4201,6 +4215,10 @@ def embedded_detection_loop():
 
 
 def start_embedded_detection_agent():
+    if os.name != "nt":
+        print("[EMBEDDED AGENT] Not started. Render/Linux cannot scan Windows USB devices.")
+        return
+
     thread = threading.Thread(target=embedded_detection_loop, daemon=True)
     thread.start()
 
