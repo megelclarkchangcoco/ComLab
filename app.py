@@ -796,6 +796,15 @@ def reject_account(user_id):
 
 @app.route("/comlab/<int:lab_id>/inventory")
 def comlab_inventory(lab_id):
+    """
+    Inventory page.
+
+    Only active peripherals are shown here.
+    Soft-deleted peripherals are hidden from Inventory and shown only in
+    Peripheral Summary > Deleted Peripheral.
+    """
+    ensure_peripheral_soft_delete_columns()
+
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -809,11 +818,12 @@ def comlab_inventory(lab_id):
     """, (str(lab_id),))
     devices = [dict(row) for row in c.fetchall()]
 
-    # Fetch peripherals
+    # Fetch ACTIVE peripherals only
     c.execute("""
         SELECT id, name, brand, unique_id, serial_number, assigned_pc, status, remarks
         FROM peripherals
-        WHERE lab_id = ?
+        WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+          AND COALESCE(deleted, 0) = 0
         ORDER BY assigned_pc ASC, name ASC
     """, (str(lab_id),))
     rows = c.fetchall()
@@ -864,6 +874,8 @@ def comlab_inventory(lab_id):
 
 @app.route("/api/add_peripheral", methods=["POST"])
 def api_add_peripheral():
+    ensure_peripheral_soft_delete_columns()
+
     data = request.get_json()
     name = data.get("name")
     brand = data.get("brand")
@@ -1015,13 +1027,15 @@ def reset_new_peripheral_status(cur, peripheral_id):
 @app.route("/api/delete_peripheral", methods=["POST"])
 def delete_peripheral():
     """
-    Remove peripheral and its runtime logic/history.
+    Soft-delete peripheral.
 
-    This fixes:
-    - old faulty still affecting a newly added device
-    - old replaced alert showing after removal
-    - stale detected_devices causing false replaced
+    Important:
+    - Does not permanently delete the row from database.
+    - Moves the peripheral to Deleted Peripheral section.
+    - Keeps runtime cleanup to avoid old faulty/missing/replaced logic.
     """
+    ensure_peripheral_soft_delete_columns()
+
     data = request.get_json(silent=True) or {}
     pid = data.get("id")
 
@@ -1045,6 +1059,7 @@ def delete_peripheral():
 
             name, serial_number, unique_id, pc_tag, lab_id = row
 
+            # Keep cleanup so a removed device will not keep old status logic.
             cleanup_peripheral_runtime_records(
                 cur,
                 lab_id=lab_id,
@@ -1055,13 +1070,73 @@ def delete_peripheral():
                 delete_same_type_detected=True
             )
 
-            cur.execute("DELETE FROM peripherals WHERE id = ?", (pid,))
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            deleted_by = session.get("username", "admin")
+
+            cur.execute("""
+                UPDATE peripherals
+                SET deleted = 1,
+                    deleted_at = ?,
+                    deleted_by = ?,
+                    status = 'deleted',
+                    status_updated_at = ?
+                WHERE id = ?
+            """, (now, deleted_by, now, pid))
+
             conn.commit()
 
-        return jsonify({"success": True, "message": "Peripheral removed completely."})
+        return jsonify({
+            "success": True,
+            "message": "Peripheral moved to Deleted Peripheral."
+        })
 
     except Exception as e:
         print("[DELETE PERIPHERAL ERROR]", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/restore_peripheral", methods=["POST"])
+def restore_peripheral():
+    """
+    Restores a deleted peripheral back to Active Peripheral.
+    """
+    ensure_peripheral_soft_delete_columns()
+
+    data = request.get_json(silent=True) or {}
+    pid = data.get("id")
+
+    if not pid:
+        return jsonify({"success": False, "message": "Missing peripheral id."}), 400
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute("""
+                UPDATE peripherals
+                SET deleted = 0,
+                    deleted_at = NULL,
+                    deleted_by = NULL,
+                    status = 'connected',
+                    disconnected_at = NULL,
+                    status_updated_at = ?
+                WHERE id = ?
+            """, (now, pid))
+
+            conn.commit()
+
+            if cur.rowcount == 0:
+                return jsonify({"success": False, "message": "Peripheral not found."}), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Peripheral restored successfully."
+        })
+
+    except Exception as e:
+        print("[RESTORE PERIPHERAL ERROR]", e)
         return jsonify({"success": False, "message": str(e)}), 500
 
 
@@ -1077,6 +1152,7 @@ def add_peripheral(comlab_id):
     """
     ensure_detected_devices_table()
     ensure_peripheral_status_columns()
+    ensure_peripheral_soft_delete_columns()
 
     data = request.get_json(silent=True) or {}
 
@@ -1116,6 +1192,7 @@ def add_peripheral(comlab_id):
                 WHERE assigned_pc = ?
                   AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND LOWER(name) IN ({placeholders})
+                  AND COALESCE(deleted, 0) = 0
                 LIMIT 1
             """, [pc_tag, str(comlab_id)] + [c.lower() for c in candidates])
 
@@ -1485,6 +1562,7 @@ def usb_event():
     try:
         ensure_detected_devices_table()
         ensure_peripheral_status_columns()
+        ensure_peripheral_soft_delete_columns()
 
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
@@ -1778,7 +1856,7 @@ def summary(comlab_id):
     peripheral_counts = []
 
     for t in all_types:
-        q = "SELECT COUNT(*) FROM peripherals WHERE lab_id=? AND name=?"
+        q = "SELECT COUNT(*) FROM peripherals WHERE lab_id=? AND name=? AND COALESCE(deleted, 0)=0"
         params = [comlab_id, t]
         if pc_no:
             q += " AND assigned_pc=?"
@@ -2003,62 +2081,146 @@ def approve_logout(req_id):
 
 @app.route("/comlab/<int:comlab_id>/inventory/peripheral")
 def peripheral_summary(comlab_id):
+    """
+    Peripheral Summary dashboard.
+
+    Sends two lists to peripheral_summary.html:
+    - active_peripherals
+    - deleted_peripherals
+    """
     try:
+        ensure_peripheral_soft_delete_columns()
+
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT 
-                assigned_pc,name,brand,serial_number,unique_id,status,remarks
+            SELECT
+                id,
+                assigned_pc,
+                name,
+                brand,
+                serial_number,
+                unique_id,
+                status,
+                remarks,
+                deleted,
+                deleted_at,
+                deleted_by
             FROM peripherals
-            WHERE lab_id = ?
-            ORDER BY assigned_pc ASC
-        """, (comlab_id,))
+            WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+              AND COALESCE(deleted, 0) = 0
+            ORDER BY assigned_pc ASC, name ASC
+        """, (str(comlab_id),))
+        active_peripherals = [dict(row) for row in cur.fetchall()]
 
-        peripherals = cur.fetchall()
+        cur.execute("""
+            SELECT
+                id,
+                assigned_pc,
+                name,
+                brand,
+                serial_number,
+                unique_id,
+                status,
+                remarks,
+                deleted,
+                deleted_at,
+                deleted_by
+            FROM peripherals
+            WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+              AND COALESCE(deleted, 0) = 1
+            ORDER BY datetime(deleted_at) DESC, assigned_pc ASC, name ASC
+        """, (str(comlab_id),))
+        deleted_peripherals = [dict(row) for row in cur.fetchall()]
+
         conn.close()
 
         return render_template(
             "peripheral_summary.html",
-            peripherals=peripherals,
+            peripherals=active_peripherals,  # fallback for old template
+            active_peripherals=active_peripherals,
+            deleted_peripherals=deleted_peripherals,
             comlab_id=comlab_id
         )
 
     except Exception as e:
         return f"DB Error: {e}", 500
+
+
 @app.route("/update_peripheral_remarks", methods=["POST"])
 def update_peripheral_remarks():
+    """
+    Updates peripheral remarks.
 
-    data = request.json
-    unique_id = data["unique_id"]
-    new_remarks = data["remarks"]
-    user = session.get("username")
+    Supports both:
+    - id based update for the new Peripheral Summary
+    - unique_id fallback for the old template
+    """
+    data = request.get_json(silent=True) or {}
 
-    with sqlite3.connect(DB_FILE) as conn:
-        cur = conn.cursor()
+    peripheral_id = data.get("id")
+    unique_id = data.get("unique_id")
+    new_remarks = data.get("remarks", "")
+    user = session.get("username", "admin")
 
-        # get old remarks
-        cur.execute("SELECT remarks FROM peripherals WHERE unique_id=?", (unique_id,))
-        old = cur.fetchone()
-        old_remarks = old[0] if old else ""
+    if not peripheral_id and not unique_id:
+        return jsonify({"success": False, "message": "Missing peripheral id or unique id."}), 400
 
-        # update main table
-        cur.execute(
-            "UPDATE peripherals SET remarks=? WHERE unique_id=?",
-            (new_remarks, unique_id)
-        )
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
 
-        # insert history
-        cur.execute("""
-            INSERT INTO peripheral_remarks_history
-            (unique_id, old_remarks, new_remarks, updated_by)
-            VALUES (?,?,?,?)
-        """, (unique_id, old_remarks, new_remarks, user))
+            if peripheral_id:
+                cur.execute("""
+                    SELECT unique_id, remarks
+                    FROM peripherals
+                    WHERE id = ?
+                    LIMIT 1
+                """, (peripheral_id,))
+            else:
+                cur.execute("""
+                    SELECT unique_id, remarks
+                    FROM peripherals
+                    WHERE unique_id = ?
+                    LIMIT 1
+                """, (unique_id,))
 
-        conn.commit()
+            old = cur.fetchone()
 
-    return jsonify({"success": True})
+            if not old:
+                return jsonify({"success": False, "message": "Peripheral not found."}), 404
+
+            real_unique_id = old[0]
+            old_remarks = old[1] or ""
+
+            if peripheral_id:
+                cur.execute("""
+                    UPDATE peripherals
+                    SET remarks = ?
+                    WHERE id = ?
+                """, (new_remarks, peripheral_id))
+            else:
+                cur.execute("""
+                    UPDATE peripherals
+                    SET remarks = ?
+                    WHERE unique_id = ?
+                """, (new_remarks, unique_id))
+
+            cur.execute("""
+                INSERT INTO peripheral_remarks_history
+                (unique_id, old_remarks, new_remarks, updated_by)
+                VALUES (?, ?, ?, ?)
+            """, (real_unique_id, old_remarks, new_remarks, user))
+
+            conn.commit()
+
+        return jsonify({"success": True})
+
+    except Exception as e:
+        print("[UPDATE PERIPHERAL REMARKS ERROR]", e)
+        return jsonify({"success": False, "message": str(e)}), 500
 @app.route("/peripheral/<unique_id>/remarks_history")
 def remarks_history(unique_id):
     with sqlite3.connect(DB_FILE) as conn:
@@ -2280,6 +2442,37 @@ def ensure_peripheral_status_columns():
             conn.commit()
     except Exception as e:
         print("[DB MIGRATION ERROR - peripheral status columns]", e)
+
+
+def ensure_peripheral_soft_delete_columns():
+    """
+    Adds soft-delete columns to the peripherals table.
+
+    This allows the system to show two sections:
+    - Active Peripheral
+    - Deleted Peripheral
+
+    Deleted peripherals are not permanently removed. They are hidden from
+    Inventory but kept for record tracking in Peripheral Summary.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(peripherals)")
+            columns = [row[1] for row in cur.fetchall()]
+
+            if "deleted" not in columns:
+                cur.execute("ALTER TABLE peripherals ADD COLUMN deleted INTEGER DEFAULT 0")
+
+            if "deleted_at" not in columns:
+                cur.execute("ALTER TABLE peripherals ADD COLUMN deleted_at TEXT")
+
+            if "deleted_by" not in columns:
+                cur.execute("ALTER TABLE peripherals ADD COLUMN deleted_by TEXT")
+
+            conn.commit()
+    except Exception as e:
+        print("[DB MIGRATION ERROR - peripheral soft delete]", e)
 
 
 def normalize_scanned_device_type(device_type):
@@ -2923,6 +3116,7 @@ def embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type):
         WHERE lab_id = ?
           AND assigned_pc = ?
           AND LOWER(name) IN ({placeholders})
+          AND COALESCE(deleted, 0) = 0
         LIMIT 1
     """, [str(lab_id), pc_tag] + candidates)
 
@@ -2946,6 +3140,7 @@ def embedded_find_registered_by_exact_id(cur, lab_id, pc_tag, unique_id):
                 serial_number = ?
                 OR unique_id = ?
               )
+          AND COALESCE(deleted, 0) = 0
         LIMIT 1
     """, (str(lab_id), pc_tag, unique_id, unique_id))
 
@@ -2979,6 +3174,7 @@ def embedded_find_registered_by_id_or_type(cur, lab_id, pc_tag, unique_id, devic
         WHERE lab_id = ?
           AND assigned_pc = ?
           AND (serial_number = ? OR unique_id = ?)
+          AND COALESCE(deleted, 0) = 0
         LIMIT 1
     """, (str(lab_id), pc_tag, unique_id, unique_id))
 
@@ -2999,6 +3195,7 @@ def embedded_process_connected_event(cur, lab_id, pc_tag, device):
     - Prevents false replaced when original device is still connected.
     """
     ensure_peripheral_status_columns()
+    ensure_peripheral_soft_delete_columns()
 
     unique_id = str(device.get("unique_id") or device.get("serial_number") or "").strip()
     device_type = embedded_normalize_device_type(device.get("device_type") or device.get("name"))
@@ -3128,6 +3325,7 @@ def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
     - No type fallback here, so a new mouse will not make the original mouse wrongfully missing.
     """
     ensure_peripheral_status_columns()
+    ensure_peripheral_soft_delete_columns()
 
     unique_id = str(device.get("unique_id") or device.get("serial_number") or "").strip()
     device_type = embedded_normalize_device_type(device.get("device_type") or device.get("name"))
@@ -3211,6 +3409,7 @@ def embedded_check_missing_devices(cur, lab_id, pc_tag):
     - This fixes the bug where unplugged becomes missing immediately because of old logs.
     """
     ensure_peripheral_status_columns()
+    ensure_peripheral_soft_delete_columns()
 
     cur.execute("""
         SELECT id, name, serial_number, unique_id, status, disconnected_at
@@ -3218,6 +3417,7 @@ def embedded_check_missing_devices(cur, lab_id, pc_tag):
         WHERE lab_id = ?
           AND assigned_pc = ?
           AND LOWER(status) = 'unplugged'
+          AND COALESCE(deleted, 0) = 0
     """, (str(lab_id), pc_tag))
 
     rows = cur.fetchall()
@@ -3295,6 +3495,7 @@ def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
         try:
             ensure_detected_devices_table()
             ensure_peripheral_status_columns()
+            ensure_peripheral_soft_delete_columns()
 
             conn = sqlite3.connect(DB_FILE, timeout=30)
             cur = conn.cursor()
@@ -3379,6 +3580,7 @@ def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
                 FROM peripherals
                 WHERE lab_id = ?
                   AND assigned_pc = ?
+                  AND COALESCE(deleted, 0) = 0
             """, (str(lab_id), pc_tag))
 
             registered_rows = cur.fetchall()
@@ -3598,6 +3800,7 @@ def api_webusb_sync():
 
         ensure_detected_devices_table()
         ensure_peripheral_status_columns()
+        ensure_peripheral_soft_delete_columns()
         remember_scanner_target(lab_id, pc_tag)
 
         skipped_empty_update = False
@@ -3617,6 +3820,7 @@ def api_webusb_sync():
                 FROM peripherals
                 WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND assigned_pc = ?
+                  AND COALESCE(deleted, 0) = 0
                 ORDER BY name ASC
             """, (lab_id, pc_tag))
             peripherals = [dict(row) for row in cur.fetchall()]
@@ -3757,6 +3961,7 @@ def scan_devices():
     try:
         ensure_detected_devices_table()
         ensure_peripheral_status_columns()
+        ensure_peripheral_soft_delete_columns()
         remember_scanner_target(lab_id, pc_tag)
 
         source = "saved_devices_only"
@@ -3821,6 +4026,7 @@ def scan_devices():
             FROM peripherals
             WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
               AND assigned_pc = ?
+              AND COALESCE(deleted, 0) = 0
             ORDER BY name ASC
         """, (str(lab_id), pc_tag))
 
@@ -3884,6 +4090,7 @@ def register_scanned_peripheral():
     try:
         ensure_detected_devices_table()
         ensure_peripheral_status_columns()
+        ensure_peripheral_soft_delete_columns()
 
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
@@ -3907,8 +4114,9 @@ def register_scanned_peripheral():
             cur.execute("""
                 SELECT assigned_pc, lab_id, name
                 FROM peripherals
-                WHERE unique_id = ?
-                   OR serial_number = ?
+                WHERE (unique_id = ?
+                   OR serial_number = ?)
+                  AND COALESCE(deleted, 0) = 0
                 LIMIT 1
             """, (unique_id, serial_number))
 
@@ -3933,6 +4141,7 @@ def register_scanned_peripheral():
                 WHERE assigned_pc = ?
                   AND CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND LOWER(name) IN ({placeholders})
+                  AND COALESCE(deleted, 0) = 0
                 LIMIT 1
             """, [pc_tag, lab_id] + [c.lower() for c in candidates])
 
@@ -4110,6 +4319,7 @@ def reset_pc_peripheral_runtime():
                 FROM peripherals
                 WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND assigned_pc = ?
+                  AND COALESCE(deleted, 0) = 0
             """, (lab_id, pc_tag))
 
             rows = cur.fetchall()
@@ -4132,6 +4342,7 @@ def reset_pc_peripheral_runtime():
                     status_updated_at = ?
                 WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
                   AND assigned_pc = ?
+                  AND COALESCE(deleted, 0) = 0
             """, (
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 lab_id,
@@ -4162,8 +4373,11 @@ def reset_pc_peripheral_runtime():
 def api_peripheral_statuses(comlab_id):
     """
     Used by inventory.html to refresh status pills without reloading the page.
+    Only active peripherals are returned.
     """
     try:
+        ensure_peripheral_soft_delete_columns()
+
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
@@ -4171,7 +4385,8 @@ def api_peripheral_statuses(comlab_id):
         cur.execute("""
             SELECT id, name, assigned_pc, status, remarks
             FROM peripherals
-            WHERE lab_id = ?
+            WHERE CAST(lab_id AS TEXT) = CAST(? AS TEXT)
+              AND COALESCE(deleted, 0) = 0
         """, (str(comlab_id),))
 
         peripherals = [dict(row) for row in cur.fetchall()]
@@ -4187,7 +4402,6 @@ def api_peripheral_statuses(comlab_id):
             "success": False,
             "message": str(e)
         }), 500
-
 
 
 def embedded_detection_loop():
@@ -4325,6 +4539,7 @@ def debug_pc_status(lab_id, pc_tag):
             FROM peripherals
             WHERE lab_id = ?
               AND assigned_pc = ?
+              AND COALESCE(deleted, 0) = 0
             ORDER BY name ASC
         """, (str(lab_id), pc_tag))
         peripherals = [dict(row) for row in cur.fetchall()]
@@ -4340,6 +4555,7 @@ def debug_pc_status(lab_id, pc_tag):
 if __name__ == "__main__":
     ensure_detected_devices_table()
     ensure_peripheral_status_columns()
+    ensure_peripheral_soft_delete_columns()
 
     # Keep this ON for automatic local USB status updates.
     # Set DISABLE_EMBEDDED_SCANNER=1 only if you use a separate local agent.

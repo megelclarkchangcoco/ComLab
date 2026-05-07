@@ -423,6 +423,10 @@ header h2 {
     box-shadow: 0 0 0 3px rgba(0,123,255,0.15);
 }
 
+/*
+MANUAL ADD BUTTON STYLE DISABLED TEMPORARILY.
+To restore later, remove this CSS comment.
+
 .add-manual-btn {
     background: var(--success);
     color: #fff;
@@ -440,6 +444,7 @@ header h2 {
     background: #218838;
     transform: translateY(-1px);
 }
+*/
 
 /* ================= STATUS PILLS ================= */
 .status-pill {
@@ -458,7 +463,9 @@ header h2 {
 .status-unplugged  { background: #dc3545; }
 .status-faulty     { background: #ffc107; color: #000; }
 .status-missing    { background: #6c757d; }
+/* REPLACED FEATURE DISABLED - kept for easy rollback.
 .status-replaced   { background: #FF4000; }
+*/
 .status-unknown    { background: #adb5bd; }
 
 .status-legend {
@@ -936,13 +943,13 @@ input.inline-edit {
             <i class="fa fa-list-alt"></i> Peripheral Summary
         </button>
 
-        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/display_usb_devices'">
+        <!-- <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/display_usb_devices'">
             <i class="fas fa-file-alt"></i> View Reports
-        </button>
-
-        <!-- <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/summary'">
-            <i class="fas fa-chart-bar"></i> View Summary
         </button> -->
+
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory/summary'">
+            <i class="fas fa-chart-bar"></i> View Summary
+        </button>
 
         <button onclick="window.location.href='/admin'">
             <i class="fas fa-home"></i> Dashboard
@@ -1024,7 +1031,10 @@ input.inline-edit {
                 <!-- Add Peripheral Form -->
                 <div class="add-form" id="form-{{ pc.tag }}">
 
-                    <!-- Manual Fields -->
+                    <!--
+                    MANUAL ADD REGISTRATION DISABLED TEMPORARILY.
+                    To restore later, remove this opening comment and the closing comment below.
+
                     <select id="type-{{ pc.tag }}">
                         <option value="">Select Device Type</option>
                         <option value="Mouse">Mouse</option>
@@ -1045,6 +1055,7 @@ input.inline-edit {
                     <button class="add-manual-btn" onclick="addPeripheralToPC('{{ pc.tag }}')">
                         <i class="fas fa-plus"></i> Add Manually
                     </button>
+                    -->
 
                     <!-- Scan Devices Section -->
                     <div class="scan-devices-section">
@@ -1084,7 +1095,9 @@ input.inline-edit {
                     <span class="status-pill status-unplugged"><i class="fas fa-circle" style="font-size:8px;"></i> Unplugged</span>
                     <span class="status-pill status-faulty"><i class="fas fa-circle" style="font-size:8px;"></i> Faulty</span>
                     <span class="status-pill status-missing"><i class="fas fa-circle" style="font-size:8px;"></i> Missing</span>
+                    <!-- REPLACED FEATURE DISABLED - kept for easy rollback.
                     <span class="status-pill status-replaced"><i class="fas fa-circle" style="font-size:8px;"></i> Replaced</span>
+                    -->
                 </div>
 
                 <!-- Peripherals Table -->
@@ -1110,7 +1123,16 @@ input.inline-edit {
                                     <td>{{ p.brand }}</td>
                                     <td>{{ p.unique_id }}</td>
                                     <td>{{ p.serial_number }}</td>
+                                    {# REPLACED FEATURE DISABLED - original status display kept for easy rollback.
                                     <td class="status-cell"><span class="status-pill status-{{ p.status|lower }}">{{ p.status }}</span></td>
+                                    #}
+                                    <td class="status-cell">
+                                        {% set display_status = p.status %}
+                                        {% if p.status and p.status|lower == 'replaced' %}
+                                            {% set display_status = 'unplugged' %}
+                                        {% endif %}
+                                        <span class="status-pill status-{{ display_status|lower }}">{{ display_status }}</span>
+                                    </td>
                                     <td class="action-buttons">
                                         <button class="edit-btn" onclick="enableEdit('{{ p.id }}')">
                                             <i class="fas fa-pen"></i> Edit
@@ -1252,7 +1274,19 @@ function escapeHtml(value) {
 }
 
 function normalizeStatus(status) {
-    return String(status || "unknown").toLowerCase().trim();
+    const normalized = String(status || "unknown").toLowerCase().trim();
+
+    /*
+       REPLACED FEATURE DISABLED - kept for easy rollback.
+       Original logic allowed the UI to display "replaced":
+       return String(status || "unknown").toLowerCase().trim();
+    */
+
+    // While Replaced is disabled, do not show "replaced" in Inventory.
+    // Backend may still send it, but Inventory will display it as unplugged.
+    if (normalized === "replaced") return "unplugged";
+
+    return normalized;
 }
 
 function renderStatusPill(status) {
@@ -1766,63 +1800,67 @@ async function registerScannedDevice(pcTag, device, button, card) {
     }
 }
 
-/* ============================================================
-   MANUAL ADD PERIPHERAL
-   ============================================================ */
-function addPeripheralToPC(pcTag) {
-    setActiveScanPc(pcTag);
-    startAutoStatusScan(pcTag);
-
-    const type = document.getElementById("type-" + pcTag)?.value?.trim();
-    const brand = document.getElementById("brand-" + pcTag)?.value?.trim();
-    const uniqueId = document.getElementById("unique_id-" + pcTag)?.value?.trim();
-    const serial = document.getElementById("serial-" + pcTag)?.value?.trim();
-
-    if (!type || !brand) {
-        alert("Select a device type and enter a brand.");
-        return;
-    }
-
-    if (!uniqueId && !serial) {
-        alert("Enter or scan the device Unique ID.");
-        return;
-    }
-
-    fetch(`/comlab/${currentLabId}/add_peripheral`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            pc_tag: pcTag,
-            name: type,
-            brand: brand,
-            unique_id: uniqueId || serial,
-            serial_number: serial || uniqueId
-        })
-    })
-    .then(r => r.json())
-    .then(resp => {
-        if (!resp.success) {
-            alert(resp.message || "Failed to add peripheral.");
-            return;
-        }
-
-        addRowToTable(pcTag, resp.peripheral);
-
-        const emptyRow = document.getElementById("empty-" + pcTag);
-        if (emptyRow) emptyRow.remove();
-
-        ["type-", "brand-", "unique_id-", "serial-"].forEach(pfx => {
-            const el = document.getElementById(pfx + pcTag);
-            if (el) el.value = "";
-        });
-
-        refreshPeripheralStatuses();
-    })
-    .catch(err => {
-        console.error("[ADD MANUAL ERROR]", err);
-        alert("Failed to add peripheral.");
-    });
-}
+// ============================================================
+// MANUAL ADD PERIPHERAL DISABLED TEMPORARILY.
+// To restore later, uncomment the function below.
+// ============================================================
+// /* ============================================================
+//    MANUAL ADD PERIPHERAL
+//    ============================================================ */
+// function addPeripheralToPC(pcTag) {
+//     setActiveScanPc(pcTag);
+//     startAutoStatusScan(pcTag);
+//
+//     const type = document.getElementById("type-" + pcTag)?.value?.trim();
+//     const brand = document.getElementById("brand-" + pcTag)?.value?.trim();
+//     const uniqueId = document.getElementById("unique_id-" + pcTag)?.value?.trim();
+//     const serial = document.getElementById("serial-" + pcTag)?.value?.trim();
+//
+//     if (!type || !brand) {
+//         alert("Select a device type and enter a brand.");
+//         return;
+//     }
+//
+//     if (!uniqueId && !serial) {
+//         alert("Enter or scan the device Unique ID.");
+//         return;
+//     }
+//
+//     fetch(`/comlab/${currentLabId}/add_peripheral`, {
+//         method:  "POST",
+//         headers: { "Content-Type": "application/json" },
+//         body: JSON.stringify({
+//             pc_tag: pcTag,
+//             name: type,
+//             brand: brand,
+//             unique_id: uniqueId || serial,
+//             serial_number: serial || uniqueId
+//         })
+//     })
+//     .then(r => r.json())
+//     .then(resp => {
+//         if (!resp.success) {
+//             alert(resp.message || "Failed to add peripheral.");
+//             return;
+//         }
+//
+//         addRowToTable(pcTag, resp.peripheral);
+//
+//         const emptyRow = document.getElementById("empty-" + pcTag);
+//         if (emptyRow) emptyRow.remove();
+//
+//         ["type-", "brand-", "unique_id-", "serial-"].forEach(pfx => {
+//             const el = document.getElementById(pfx + pcTag);
+//             if (el) el.value = "";
+//         });
+//
+//         refreshPeripheralStatuses();
+//     })
+//     .catch(err => {
+//         console.error("[ADD MANUAL ERROR]", err);
+//         alert("Failed to add peripheral.");
+//     });
+// }
 
 function addRowToTable(pcTag, p) {
     const tbody = document.getElementById("table-" + pcTag)?.getElementsByTagName("tbody")[0];
@@ -1857,7 +1895,8 @@ function addRowToTable(pcTag, p) {
    This is the important part:
    - When you open/select a PC, the page automatically calls /api/scan_devices.
    - No need to press Scan Devices again.
-   - It updates connected, unplugged, replaced, missing, and faulty.
+   - It updates connected, unplugged, missing, and faulty.
+   - REPLACED FEATURE DISABLED: original replaced display is commented/converted in this template.
    ============================================================ */
 let autoStatusTimer = null;
 let autoStatusRunning = false;

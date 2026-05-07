@@ -8,18 +8,29 @@
 <style>
 :root{
     --primary:#007bff;
+    --primary-dark:#0056b3;
     --success:#28a745;
     --danger:#dc3545;
     --warning:#ffc107;
     --info:#17a2b8;
     --gray:#6c757d;
+    --bg:#f5f7fa;
+    --card:#ffffff;
+    --line:#e5e7eb;
+    --text:#1f2937;
+    --muted:#6b7280;
+}
+
+* {
+    box-sizing: border-box;
 }
 
 body {
     font-family: "Segoe UI", sans-serif;
-    background: #f5f7fa;
+    background: var(--bg);
     margin: 0;
     padding: 25px;
+    color: var(--text);
 }
 
 header {
@@ -31,26 +42,117 @@ header {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 20px;
-    box-shadow:0 6px 25px rgba(0,0,0,0.25);
+    box-shadow:0 6px 25px rgba(0,0,0,0.20);
+    gap: 14px;
+    flex-wrap: wrap;
 }
-header h2 { margin: 0; font-size: 24px; }
-.menu-buttons { display:flex; gap:12px; }
+
+header h2 {
+    margin: 0;
+    font-size: 24px;
+}
+
+.menu-buttons {
+    display:flex;
+    gap:12px;
+    flex-wrap: wrap;
+}
+
 .menu-buttons button {
-    background:white; color:var(--primary);
-    border:none; padding:10px 20px; border-radius:10px;
-    cursor:pointer; font-weight:600; transition:0.25s;
-    display:flex; align-items:center; gap:8px;
+    background:white;
+    color:var(--primary);
+    border:none;
+    padding:10px 20px;
+    border-radius:10px;
+    cursor:pointer;
+    font-weight:700;
+    transition:0.25s;
+    display:flex;
+    align-items:center;
+    gap:8px;
     box-shadow:0 2px 6px rgba(0,0,0,0.15);
 }
-.menu-buttons button:hover {background:#e7f1ff; transform:translateY(-2px);}
 
+.menu-buttons button:hover {
+    background:#e7f1ff;
+    transform:translateY(-2px);
+}
+
+.print-btn {
+    background: var(--info) !important;
+    color: white !important;
+}
+
+.print-btn:hover {
+    background: #138496 !important;
+}
+
+/* SUMMARY CARDS */
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 18px;
+}
+
+.summary-card {
+    background: var(--card);
+    border-radius: 14px;
+    padding: 18px 20px;
+    box-shadow: 0 5px 18px rgba(0,0,0,0.10);
+    border: 1px solid var(--line);
+}
+
+.summary-card h3 {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.summary-card .count {
+    font-size: 34px;
+    font-weight: 900;
+    color: var(--primary);
+}
+
+/* TABS */
+.tab-bar {
+    background: white;
+    border-radius: 14px;
+    padding: 8px;
+    display: inline-flex;
+    gap: 8px;
+    box-shadow: 0 5px 18px rgba(0,0,0,0.10);
+    border: 1px solid var(--line);
+    margin-bottom: 18px;
+}
+
+.tab-btn {
+    border: none;
+    background: transparent;
+    color: var(--text);
+    padding: 11px 18px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tab-btn.active {
+    background: var(--primary);
+    color: white;
+}
 
 /* FILTERS */
 .filters {
     background: white;
     padding: 15px 20px;
     border-radius: 12px;
-    box-shadow:0 5px 15px rgba(0,0,0,0.15);
+    box-shadow:0 5px 15px rgba(0,0,0,0.12);
     margin-bottom: 20px;
     display: flex;
     flex-wrap: wrap;
@@ -58,47 +160,86 @@ header h2 { margin: 0; font-size: 24px; }
     align-items: center;
 }
 
-.filters input, .filters select {
+.filters input,
+.filters select {
     padding: 9px 12px;
     border-radius: 8px;
     border: 1px solid #ccc;
     font-size: 14px;
+    min-height: 40px;
 }
 
-.clear-btn, .print-btn {
+.clear-btn {
     background: var(--danger);
     color: white;
     border: none;
     padding: 9px 15px;
     border-radius: 8px;
     cursor: pointer;
-    font-weight: 600;
-    display: flex; align-items:center; gap:6px;
+    font-weight: 700;
+    display: flex;
+    align-items:center;
+    gap:6px;
 }
-.print-btn { background: var(--info); }
-.clear-btn:hover { background: #c82333; }
-.print-btn:hover { background: #138496; }
+
+.clear-btn:hover {
+    background: #c82333;
+}
 
 /* TABLE */
+.table-section {
+    display: none;
+}
+
+.table-section.active {
+    display: block;
+}
+
+.table-title {
+    margin: 0 0 12px;
+    font-size: 20px;
+    font-weight: 900;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    border-radius: 12px;
+    box-shadow:0 5px 20px rgba(0,0,0,0.12);
+    border: 1px solid var(--line);
+    background: white;
+}
+
 table {
     width: 100%;
+    min-width: 1100px;
     background: white;
     border-collapse: collapse;
-    border-radius: 12px;
     overflow: hidden;
-    box-shadow:0 5px 20px rgba(0,0,0,0.15);
 }
-th, td {
+
+th,
+td {
     padding: 12px;
     text-align: center;
     border-bottom: 1px solid #ddd;
+    vertical-align: middle;
 }
+
 th {
     background: var(--primary);
     color: white;
-    font-weight: 600;
+    font-weight: 700;
+    font-size: 13px;
+    white-space: nowrap;
 }
-tr:hover { background: #f1f1f1; }
+
+tr:hover {
+    background: #f7fbff;
+}
 
 textarea {
     width: 95%;
@@ -107,158 +248,433 @@ textarea {
     padding: 6px;
     border-radius: 6px;
     border: 1px solid #ccc;
+    font-family: inherit;
 }
 
 .save-btn {
     background: var(--success);
     color: white;
     border: none;
-    padding: 6px 12px;
+    padding: 7px 12px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 13px;
+    font-weight: 700;
 }
-.save-btn:hover { background: #218838; }
+
+.save-btn:hover {
+    background: #218838;
+}
+
+.empty-row td {
+    padding: 28px;
+    color: var(--muted);
+    font-weight: 700;
+    font-style: italic;
+}
 
 /* Status Badges */
 .badge {
-    padding: 5px 10px;
-    border-radius: 6px;
-    font-weight: 600;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-weight: 800;
     color: white;
+    font-size: 12px;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 92px;
 }
+
 .connected { background: var(--success); }
 .unplugged { background: var(--gray); }
 .faulty { background: var(--danger); }
 .missing { background: var(--warning); color:black; }
+.deleted { background: #111827; }
+
+/*
+REPLACED FEATURE DISABLED.
+Uncomment this if the Replaced feature will be returned.
 .replaced { background: var(--info); }
+*/
+
+.deleted-note {
+    color: var(--muted);
+    font-size: 13px;
+    margin: -4px 0 14px;
+}
 
 /* Print Styles */
 @media print {
-    .filters, .menu-buttons button { display:none !important; }
-    .save-btn, textarea { display:none !important; }
+    .filters,
+    .menu-buttons button,
+    .tab-bar,
+    .save-btn,
+    textarea {
+        display:none !important;
+    }
 
-    /* Show remarks as text instead of textarea */
+    .table-section {
+        display: block !important;
+        margin-bottom: 30px;
+    }
+
     td.remarks::before {
         content: attr(data-text);
         display: block;
     }
-    td.remarks textarea { display:none; }
 
-    body { background:white; }
-    table { box-shadow:none; }
+    td.remarks textarea {
+        display:none;
+    }
+
+    body {
+        background:white;
+        padding: 0;
+    }
+
+    header {
+        box-shadow: none;
+        border-radius: 0;
+    }
+
+    .summary-card,
+    .table-wrapper {
+        box-shadow:none;
+    }
+}
+
+@media (max-width: 768px) {
+    body {
+        padding: 14px;
+    }
+
+    header {
+        padding: 18px;
+    }
+
+    header h2 {
+        font-size: 20px;
+    }
+
+    .menu-buttons button {
+        flex: 1;
+        min-width: 140px;
+        justify-content: center;
+    }
+
+    .tab-bar {
+        width: 100%;
+        display: flex;
+    }
+
+    .tab-btn {
+        flex: 1;
+        justify-content: center;
+    }
+
+    .filters {
+        flex-direction: column;
+        align-items: stretch;
+    }
 }
 </style>
 </head>
 
 <body>
 
+{% set active_list = active_peripherals if active_peripherals is defined else peripherals %}
+{% set deleted_list = deleted_peripherals if deleted_peripherals is defined else [] %}
+{% set filter_list = all_peripherals if all_peripherals is defined else active_list %}
+
 <header>
     <h2><i class="fa fa-list-alt"></i> Peripheral Summary - Computer Lab {{ comlab_id }}</h2>
+
     <div class="menu-buttons">
-        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory'"><i class="fas fa-arrow-left"></i> Back</button>
-        <button onclick="window.location.href='/admin'"><i class="fas fa-home"></i> Dashboard</button>
-        <button class="print-btn" onclick="window.print()"><i class="fas fa-print"></i> Print PDF</button>
+        <button onclick="window.location.href='/comlab/{{ comlab_id }}/inventory'">
+            <i class="fas fa-arrow-left"></i> Back
+        </button>
+
+        <button onclick="window.location.href='/admin'">
+            <i class="fas fa-home"></i> Dashboard
+        </button>
+
+        <button class="print-btn" onclick="window.print()">
+            <i class="fas fa-print"></i> Print PDF
+        </button>
     </div>
 </header>
+
+<div class="summary-cards">
+    <div class="summary-card">
+        <h3>Active Peripheral</h3>
+        <div class="count">{{ active_list|length }}</div>
+    </div>
+
+    <div class="summary-card">
+        <h3>Deleted Peripheral</h3>
+        <div class="count">{{ deleted_list|length }}</div>
+    </div>
+</div>
+
+<div class="tab-bar">
+    <button id="activeTabBtn" class="tab-btn active" onclick="switchPeripheralTab('active')">
+        <i class="fas fa-check-circle"></i> Active Peripheral
+    </button>
+
+    <button id="deletedTabBtn" class="tab-btn" onclick="switchPeripheralTab('deleted')">
+        <i class="fas fa-trash"></i> Deleted Peripheral
+    </button>
+</div>
 
 <!-- FILTERS -->
 <div class="filters">
     <select id="filter-pc">
         <option value="">All PC Names</option>
-        {% for pc in peripherals|map(attribute='assigned_pc')|unique %}
-            <option value="{{ pc }}">{{ pc }}</option>
+        {% for pc in filter_list|map(attribute='assigned_pc')|unique %}
+            {% if pc %}
+                <option value="{{ pc }}">{{ pc }}</option>
+            {% endif %}
         {% endfor %}
     </select>
+
     <input type="text" id="filter-serial" placeholder="Search Serial Number">
     <input type="text" id="filter-unique" placeholder="Search Unique ID">
+
     <select id="filter-device">
         <option value="">All Device Names</option>
-        {% for d in peripherals|map(attribute='name')|unique %}
-            <option value="{{ d }}">{{ d }}</option>
+        {% for d in filter_list|map(attribute='name')|unique %}
+            {% if d %}
+                <option value="{{ d }}">{{ d }}</option>
+            {% endif %}
         {% endfor %}
     </select>
+
     <select id="filter-status">
         <option value="">All Status</option>
-        <option value="CONNECTED">CONNECTED</option>
-        <option value="UNPLUGGED">UNPLUGGED</option>
-        <option value="FAULTY">FAULTY</option>
-        <option value="MISSING">MISSING</option>
-        <option value="REPLACED">REPLACED</option>
+        <option value="connected">CONNECTED</option>
+        <option value="unplugged">UNPLUGGED</option>
+        <option value="faulty">FAULTY</option>
+        <option value="missing">MISSING</option>
+        <option value="deleted">DELETED</option>
+
+        <!--
+        REPLACED FEATURE DISABLED.
+        Uncomment this option if the Replaced feature will be returned.
+        <option value="replaced">REPLACED</option>
+        -->
     </select>
-    <button class="clear-btn" id="clearFilters"><i class="fas fa-times-circle"></i> Clear Filters</button>
+
+    <button class="clear-btn" id="clearFilters">
+        <i class="fas fa-times-circle"></i> Clear Filters
+    </button>
 </div>
 
-<!-- TABLE -->
-<table>
-<thead>
-<tr>
-    <th>PC NAME</th>
-    <th>SERIAL NUMBER</th>
-    <th>UNIQUE ID</th>
-    <th>DEVICE NAME</th>
-    <th>BRAND</th>
-    <th>STATUS</th>
-    <th>REMARKS</th>
-    <th>ACTION</th>
-</tr>
-</thead>
-<tbody id="peripheralTable">
-{% for p in peripherals %}
-<tr>
-    <td class="pc">{{ p.assigned_pc }}</td>
-    <td class="serial">{{ p.serial_number }}</td>
-    <td class="unique">{{ p.unique_id }}</td>
-    <td class="device">{{ p.name }}</td>
-    <td>{{ p.brand }}</td>
-    <td class="status"><span class="badge {{ p.status }}">{{ p.status }}</span></td>
-<td class="remarks" data-text="{{ p.remarks }}">
-    <textarea id="remarks-{{ p.unique_id }}">{{ p.remarks }}</textarea>
-</td>
-    <td>
-        <button class="save-btn" onclick="saveRemarks('{{ p.unique_id }}')">Save</button>
-    </td>
-</tr>
-{% endfor %}
-</tbody>
-</table>
+<!-- ACTIVE TABLE -->
+<section id="activeSection" class="table-section active">
+    <h3 class="table-title">
+        <i class="fas fa-check-circle" style="color:var(--success);"></i>
+        Active Peripheral
+    </h3>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>PC NAME</th>
+                    <th>SERIAL NUMBER</th>
+                    <th>UNIQUE ID</th>
+                    <th>DEVICE NAME</th>
+                    <th>BRAND</th>
+                    <th>STATUS</th>
+                    <th>REMARKS</th>
+                    <th>ACTION</th>
+                </tr>
+            </thead>
+
+            <tbody id="activePeripheralTable">
+                {% for p in active_list %}
+                {% set row_id = p.id if p.id is defined else loop.index %}
+                {% set status_value = (p.status or 'unknown')|lower %}
+                <tr>
+                    <td class="pc">{{ p.assigned_pc or '-' }}</td>
+                    <td class="serial">{{ p.serial_number or '-' }}</td>
+                    <td class="unique">{{ p.unique_id or '-' }}</td>
+                    <td class="device">{{ p.name or '-' }}</td>
+                    <td>{{ p.brand or '-' }}</td>
+                    <td class="status">
+                        <span class="badge {{ status_value }}">{{ p.status or 'UNKNOWN' }}</span>
+                    </td>
+                    <td class="remarks" data-text="{{ p.remarks or '' }}">
+                        <textarea id="remarks-active-{{ row_id }}">{{ p.remarks or '' }}</textarea>
+                    </td>
+                    <td>
+                        <button class="save-btn" onclick="saveRemarks('{{ row_id }}', 'active')">
+                            Save
+                        </button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr class="empty-row">
+                    <td colspan="8">No active peripherals found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<!-- DELETED TABLE -->
+<section id="deletedSection" class="table-section">
+    <h3 class="table-title">
+        <i class="fas fa-trash" style="color:var(--danger);"></i>
+        Deleted Peripheral
+    </h3>
+
+    <p class="deleted-note">
+        Deleted peripherals are kept here for record tracking. They are hidden from the active inventory.
+    </p>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>PC NAME</th>
+                    <th>SERIAL NUMBER</th>
+                    <th>UNIQUE ID</th>
+                    <th>DEVICE NAME</th>
+                    <th>BRAND</th>
+                    <th>STATUS</th>
+                    <th>REMARKS</th>
+                    <th>DELETED BY</th>
+                    <th>DELETED AT</th>
+                </tr>
+            </thead>
+
+            <tbody id="deletedPeripheralTable">
+                {% for p in deleted_list %}
+                {% set status_value = (p.status or 'deleted')|lower %}
+                <tr>
+                    <td class="pc">{{ p.assigned_pc or '-' }}</td>
+                    <td class="serial">{{ p.serial_number or '-' }}</td>
+                    <td class="unique">{{ p.unique_id or '-' }}</td>
+                    <td class="device">{{ p.name or '-' }}</td>
+                    <td>{{ p.brand or '-' }}</td>
+                    <td class="status">
+                        <span class="badge {{ status_value }}">{{ p.status or 'DELETED' }}</span>
+                    </td>
+                    <td class="remarks" data-text="{{ p.remarks or '' }}">{{ p.remarks or '-' }}</td>
+                    <td>{{ p.deleted_by or '-' }}</td>
+                    <td>{{ p.deleted_at or '-' }}</td>
+                </tr>
+                {% else %}
+                <tr class="empty-row">
+                    <td colspan="9">No deleted peripherals found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 
 <script>
-function saveRemarks(uid){
-    const val = document.getElementById("remarks-" + uid).value;
-    fetch("/update_peripheral_remarks", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({unique_id:uid,remarks:val})
-    })
-    .then(r=>r.json())
-    .then(d=>{ alert(d.success?"Saved!":"Failed to save"); })
-    .catch(err=>console.error(err));
+let currentPeripheralTab = "active";
+
+function switchPeripheralTab(tab) {
+    currentPeripheralTab = tab;
+
+    const activeSection = document.getElementById("activeSection");
+    const deletedSection = document.getElementById("deletedSection");
+    const activeTabBtn = document.getElementById("activeTabBtn");
+    const deletedTabBtn = document.getElementById("deletedTabBtn");
+
+    if (tab === "deleted") {
+        activeSection.classList.remove("active");
+        deletedSection.classList.add("active");
+        activeTabBtn.classList.remove("active");
+        deletedTabBtn.classList.add("active");
+    } else {
+        deletedSection.classList.remove("active");
+        activeSection.classList.add("active");
+        deletedTabBtn.classList.remove("active");
+        activeTabBtn.classList.add("active");
+    }
+
+    applyFilters();
 }
 
-function applyFilters(){
+function getCurrentTableBody() {
+    return currentPeripheralTab === "deleted"
+        ? document.getElementById("deletedPeripheralTable")
+        : document.getElementById("activePeripheralTable");
+}
+
+function saveRemarks(rowId, tableType) {
+    const textareaId = `remarks-${tableType}-${rowId}`;
+    const textarea = document.getElementById(textareaId);
+
+    if (!textarea) {
+        alert("Remarks field not found.");
+        return;
+    }
+
+    fetch("/update_peripheral_remarks", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            id: rowId,
+            remarks: textarea.value
+        })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.success) {
+            const remarksCell = textarea.closest(".remarks");
+            if (remarksCell) remarksCell.dataset.text = textarea.value;
+            alert("Remarks saved.");
+        } else {
+            alert(d.message || "Failed to save remarks.");
+        }
+    })
+    .catch(err => {
+        console.error(err);
+        alert("Failed to save remarks.");
+    });
+}
+
+function applyFilters() {
     const pc = document.getElementById("filter-pc").value.toLowerCase();
     const serial = document.getElementById("filter-serial").value.toLowerCase();
     const unique = document.getElementById("filter-unique").value.toLowerCase();
     const device = document.getElementById("filter-device").value.toLowerCase();
     const status = document.getElementById("filter-status").value.toLowerCase();
 
-    document.querySelectorAll("#peripheralTable tr").forEach(row=>{
+    const tableBody = getCurrentTableBody();
+    if (!tableBody) return;
+
+    tableBody.querySelectorAll("tr").forEach(row => {
+        if (row.classList.contains("empty-row")) return;
+
         let show = true;
-        if(pc && !row.querySelector(".pc").innerText.toLowerCase().includes(pc)) show=false;
-        if(serial && !row.querySelector(".serial").innerText.toLowerCase().includes(serial)) show=false;
-        if(unique && !row.querySelector(".unique").innerText.toLowerCase().includes(unique)) show=false;
-        if(device && !row.querySelector(".device").innerText.toLowerCase().includes(device)) show=false;
-        if(status && !row.querySelector(".status").innerText.toLowerCase().includes(status)) show=false;
+
+        if (pc && !row.querySelector(".pc").innerText.toLowerCase().includes(pc)) show = false;
+        if (serial && !row.querySelector(".serial").innerText.toLowerCase().includes(serial)) show = false;
+        if (unique && !row.querySelector(".unique").innerText.toLowerCase().includes(unique)) show = false;
+        if (device && !row.querySelector(".device").innerText.toLowerCase().includes(device)) show = false;
+        if (status && !row.querySelector(".status").innerText.toLowerCase().includes(status)) show = false;
+
         row.style.display = show ? "" : "none";
     });
 }
 
-document.querySelectorAll(".filters input, .filters select").forEach(el=>{
+document.querySelectorAll(".filters input, .filters select").forEach(el => {
     el.addEventListener("input", applyFilters);
+    el.addEventListener("change", applyFilters);
 });
-document.getElementById("clearFilters").onclick = ()=>{
-    document.querySelectorAll(".filters input, .filters select").forEach(el=>el.value="");
+
+document.getElementById("clearFilters").onclick = () => {
+    document.querySelectorAll(".filters input, .filters select").forEach(el => el.value = "");
     applyFilters();
 };
 </script>
