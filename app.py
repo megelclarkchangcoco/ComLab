@@ -18,6 +18,58 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 DB_FILE = "database.db"
 
+
+# ============================================================
+# YEAR COLUMN MIGRATION HELPER
+# Keeps old existing data from grade, then uses year going forward.
+# ============================================================
+def ensure_year_columns():
+    """
+    Adds year columns to users and profile_edits_pending if they do not exist.
+    If old grade columns exist, their values are copied to year.
+    This avoids breaking an existing database.db.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+
+            def table_exists(table_name):
+                cur.execute("""
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = ?
+                    LIMIT 1
+                """, (table_name,))
+                return cur.fetchone() is not None
+
+            def ensure_year_for_table(table_name):
+                if not table_exists(table_name):
+                    return
+
+                cur.execute(f"PRAGMA table_info({table_name})")
+                columns = [row[1] for row in cur.fetchall()]
+
+                if "year" not in columns:
+                    cur.execute(f"ALTER TABLE {table_name} ADD COLUMN year TEXT")
+                    print(f"[DB MIGRATION] Added year column to {table_name} table.")
+
+                if "grade" in columns:
+                    cur.execute(f"""
+                        UPDATE {table_name}
+                        SET year = grade
+                        WHERE (year IS NULL OR year = '')
+                          AND grade IS NOT NULL
+                          AND grade != ''
+                    """)
+
+            ensure_year_for_table("users")
+            ensure_year_for_table("profile_edits_pending")
+
+            conn.commit()
+    except Exception as e:
+        print("[DB MIGRATION ERROR - year]", e)
+
+
 # ============================================================
 # REGISTERED DEVICE COOKIE HELPERS
 # Admin can login anywhere.
@@ -116,13 +168,15 @@ def register():
         username = request.form.get("username")
         password = request.form.get("password")
         name = request.form.get("name")
-        grade = None
+        ensure_year_columns()
+
+        year = None
         section = None
 
         # For students
         if role == "user":
             username = request.form.get("student_number")
-            grade = request.form.get("grade")
+            year = request.form.get("year")
             section = request.form.get("section")
 
         # For professors
@@ -149,9 +203,9 @@ def register():
                 return jsonify({"success": False, "error": "Username/ID already exists!"})
 
             cur.execute("""
-                INSERT INTO users (username, name, password, role, status, grade, section, created_at)
+                INSERT INTO users (username, name, password, role, status, year, section, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (username, name, hashed_password, role, "pending", grade, section, created_at))
+            """, (username, name, hashed_password, role, "pending", year, section, created_at))
             conn.commit()
 
         return jsonify({"success": True})
@@ -603,6 +657,7 @@ def account_management():
         return redirect(url_for("login"))
 
     account_type = request.args.get("type", "user")
+    ensure_year_columns()
 
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
@@ -610,7 +665,7 @@ def account_management():
 
         if account_type == "user":
             cur.execute("""
-                SELECT id, username, name, password, grade, section, role, created_at
+                SELECT id, username, name, password, year, section, role, created_at
                 FROM users
                 WHERE (role = 'user' OR role = 'professor')
                   AND status = 'active'
@@ -629,7 +684,7 @@ def account_management():
 
         # Needed by the pending accounts modal in account_management.html.
         cur.execute("""
-            SELECT id, username, name, grade, section, role, created_at
+            SELECT id, username, name, year, section, role, created_at
             FROM users
             WHERE status = 'pending'
             ORDER BY id DESC
@@ -662,6 +717,8 @@ def delete_account(account_type, user_id):
 
 @app.route("/admin/accounts/create", methods=["POST"])
 def admin_create_account():
+    ensure_year_columns()
+
     if "username" not in session or session.get("role") != "admin":
         return jsonify({"success": False, "message": "Unauthorized"}), 403
 
@@ -671,7 +728,7 @@ def admin_create_account():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     role = (data.get("role") or "user").strip().lower()
-    grade = (data.get("grade") or "").strip()
+    year = (data.get("year") or data.get("grade") or "").strip()
     section = (data.get("section") or "").strip()
 
     if not name or not username or not password:
@@ -683,14 +740,14 @@ def admin_create_account():
     if role not in ["user", "professor", "admin"]:
         return jsonify({"success": False, "message": "Invalid role."}), 400
 
-    if role == "user" and (not grade or not section):
+    if role == "user" and (not year or not section):
         return jsonify({"success": False, "message": "Year level and section are required for student accounts."}), 400
 
     if role == "admin":
-        grade = None
+        year = None
         section = None
     elif role == "professor":
-        grade = None
+        year = None
         section = section or None
 
     hashed_password = generate_password_hash(password)
@@ -705,7 +762,7 @@ def admin_create_account():
                 return jsonify({"success": False, "message": "Username/ID already exists."}), 409
 
             cur.execute("""
-                INSERT INTO users (username, name, password, role, status, grade, section, created_at)
+                INSERT INTO users (username, name, password, role, status, year, section, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 username,
@@ -713,7 +770,7 @@ def admin_create_account():
                 hashed_password,
                 role,
                 "active",
-                grade,
+                year,
                 section,
                 created_at
             ))
@@ -768,11 +825,12 @@ def admin_reset_password():
 
 @app.route("/pending_accounts")
 def pending_accounts():
+    ensure_year_columns()
 
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        cur.execute("SELECT id, username, name, grade, section, role, created_at FROM users WHERE status='pending' ORDER BY id DESC")
+        cur.execute("SELECT id, username, name, year, section, role, created_at FROM users WHERE status='pending' ORDER BY id DESC")
         pending = [dict(row) for row in cur.fetchall()]
 
     return jsonify(pending)
@@ -1329,8 +1387,10 @@ def student_dashboard():
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
+        ensure_year_columns()
+
         cur.execute("""
-            SELECT username, name, email, grade, section, contact, profile_pic
+            SELECT username, name, email, year, section, contact, profile_pic
             FROM users
             WHERE username = ?
         """, (username,))
@@ -1484,6 +1544,8 @@ def change_password():
 # View/Edit profile (admin verification required)
 @app.route("/edit_profile", methods=["POST"])
 def edit_profile():
+    ensure_year_columns()
+
     submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Add created date
     data = request.form
     # Store changes as "pending" in a separate table for admin verification
@@ -1491,9 +1553,9 @@ def edit_profile():
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO profile_edits_pending 
-            (username, full_name, grade, section, email, contact , submitted_at, status)
+            (username, full_name, year, section, email, contact , submitted_at, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (session["username"], data["full_name"], data["grade"], data["section"], data["email"], data["contact"], submitted_at , "pending"))
+        """, (session["username"], data["full_name"], data.get("year") or data.get("grade"), data["section"], data["email"], data["contact"], submitted_at , "pending"))
         conn.commit()
 
     flash("Profile edit request submitted for admin verification.", "success")
@@ -1501,25 +1563,29 @@ def edit_profile():
 
 @app.route("/api/profile_edits_pending")
 def api_profile_edits_pending():
+    ensure_year_columns()
+
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, username, full_name, grade, section, email, contact, submitted_at FROM profile_edits_pending WHERE status='pending'")
+        cur.execute("SELECT id, username, full_name, year, section, email, contact, submitted_at FROM profile_edits_pending WHERE status='pending'")
         rows = cur.fetchall()
-        data = [dict(zip(["id","username","full_name","grade","section","email","contact","submitted_at"], row)) for row in rows]
+        data = [dict(zip(["id","username","full_name","year","section","email","contact","submitted_at"], row)) for row in rows]
     return jsonify(data)
 
 @app.route("/approve_edit/<int:edit_id>", methods=["POST"])
 def approve_edit(edit_id):
+    ensure_year_columns()
+
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.cursor()
         # Get pending edit
-        cur.execute("SELECT username, full_name, grade, section, email, contact FROM profile_edits_pending WHERE id=?", (edit_id,))
+        cur.execute("SELECT username, full_name, year, section, email, contact FROM profile_edits_pending WHERE id=?", (edit_id,))
         row = cur.fetchone()
         if row:
-            username, full_name, grade, section, email, contact = row
+            username, full_name, year, section, email, contact = row
             # Update users table
-            cur.execute("""UPDATE users SET name=?, grade=?, section=?, email=?, contact=? WHERE username=?""",
-                        (full_name, grade, section, email, contact, username))
+            cur.execute("""UPDATE users SET name=?, year=?, section=?, email=?, contact=? WHERE username=?""",
+                        (full_name, year, section, email, contact, username))
             # Mark pending edit as approved
             cur.execute("UPDATE profile_edits_pending SET status='approved' WHERE id=?", (edit_id,))
             conn.commit()
