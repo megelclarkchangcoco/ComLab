@@ -1814,52 +1814,128 @@ def alerts_latest():
         print("[ALERTS LATEST ERROR]", e)
         return jsonify([])
 
-
 @app.route('/alerts/stream')
 def alerts_stream():
     """
     Realtime notification stream for the admin dashboard.
-    Sends JSON, not the old location|serial|alert_type text format.
+
+    FIXED:
+    - Realtime faulty notifications
+    - Realtime replaced notifications
+    - Realtime missing notifications on Render
     """
+
     ensure_peripheral_alerts_table()
 
     def event_stream():
+
         last_id = 0
 
         while True:
+
             try:
+
                 with sqlite3.connect(DB_FILE) as conn:
+
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
 
+                    # =====================================================
+                    # RENDER-SAFE MISSING CHECKER
+                    # =====================================================
+
+                    try:
+
+                        cur.execute("""
+                            SELECT DISTINCT
+                                lab_id,
+                                assigned_pc
+                            FROM peripherals
+                            WHERE LOWER(status) = 'unplugged'
+                              AND COALESCE(deleted,0)=0
+                        """)
+
+                        pending_missing = cur.fetchall()
+
+                        for row in pending_missing:
+
+                            lab_id = row["lab_id"]
+                            pc_tag = row["assigned_pc"]
+
+                            embedded_check_missing_devices(
+                                cur,
+                                str(lab_id),
+                                pc_tag
+                            )
+
+                        conn.commit()
+
+                    except Exception as missing_error:
+
+                        print(
+                            "[MISSING CHECK ERROR]",
+                            missing_error
+                        )
+
+                    # =====================================================
+                    # LOAD NEW ALERTS
+                    # =====================================================
+
                     cur.execute("""
-                        SELECT id, location, serial_number, alert_type,
-                               device_name, device_type, user_id, timestamp, event_type
+                        SELECT
+                            id,
+                            location,
+                            serial_number,
+                            alert_type,
+                            device_name,
+                            device_type,
+                            user_id,
+                            timestamp,
+                            event_type
                         FROM peripheral_alerts
                         WHERE id > ?
                           AND COALESCE(deleted, 0) = 0
-                          AND LOWER(alert_type) IN ('faulty', 'missing', 'replaced')
+                          AND LOWER(alert_type)
+                              IN ('faulty', 'missing', 'replaced')
                         ORDER BY id ASC
                     """, (last_id,))
 
                     rows = cur.fetchall()
 
+                # =========================================================
+                # SEND SSE EVENTS
+                # =========================================================
+
                 for row in rows:
+
                     last_id = int(row["id"])
+
                     payload = build_alert_payload(row)
-                    yield f"data: {json.dumps(payload)}\n\n"
+
+                    yield (
+                        f"data: "
+                        f"{json.dumps(payload)}\n\n"
+                    )
 
                 time.sleep(2)
 
             except GeneratorExit:
                 break
+
             except Exception as e:
+
                 print("[ALERT STREAM ERROR]", e)
+
                 time.sleep(0.5)
 
-    response = Response(event_stream(), mimetype='text/event-stream')
+    response = Response(
+        event_stream(),
+        mimetype='text/event-stream'
+    )
+
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'
+
     return response
 
 @app.route("/comlab/<int:comlab_id>/inventory/summary")
