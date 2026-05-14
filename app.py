@@ -13,6 +13,7 @@ import secrets, socket
 from threading import Thread
 import smtplib
 from email.mime.text import MIMEText
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
@@ -2391,7 +2392,7 @@ import threading
 
 EMBEDDED_AGENT_INTERVAL_SECONDS = 1
 FAULTY_RECONNECT_COUNT = 3
-MISSING_THRESHOLD_SECONDS = 60
+MISSING_THRESHOLD_SECONDS = 30
 
 # Local scanner settings.
 # The background scanner uses this target so status can update automatically
@@ -2490,24 +2491,35 @@ def ensure_detected_devices_table():
 
 def ensure_peripheral_status_columns():
     """
-    Adds status timestamp columns used by the fixed unplugged/missing logic.
-    disconnected_at prevents old peripheral_logs from making a device missing immediately.
+    Adds runtime status columns if missing.
     """
+
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
+
             cur.execute("PRAGMA table_info(peripherals)")
             columns = [row[1] for row in cur.fetchall()]
 
-            if "disconnected_at" not in columns:
-                cur.execute("ALTER TABLE peripherals ADD COLUMN disconnected_at TEXT")
+            required_columns = {
+                "status": "TEXT DEFAULT 'connected'",
+                "disconnected_at": "TEXT",
+                "status_updated_at": "TEXT",
+                "disconnect_count": "INTEGER DEFAULT 0",
+                "last_event_at": "TEXT"
+            }
 
-            if "status_updated_at" not in columns:
-                cur.execute("ALTER TABLE peripherals ADD COLUMN status_updated_at TEXT")
+            for column_name, column_type in required_columns.items():
+                if column_name not in columns:
+                    cur.execute(f"""
+                        ALTER TABLE peripherals
+                        ADD COLUMN {column_name} {column_type}
+                    """)
 
             conn.commit()
+
     except Exception as e:
-        print("[DB MIGRATION ERROR - peripheral status columns]", e)
+        print("[STATUS COLUMN ERROR]", e)
 
 
 def ensure_peripheral_soft_delete_columns():
@@ -3259,17 +3271,28 @@ def embedded_process_connected_event(cur, lab_id, pc_tag, device):
     - Exact registered ID = connected.
     - Same type but different ID = replaced ONLY if original is already unplugged/missing/replaced.
     - Prevents false replaced when original device is still connected.
+    - Resets disconnect_count on reconnect.
     """
+
     ensure_peripheral_status_columns()
     ensure_peripheral_soft_delete_columns()
 
-    unique_id = str(device.get("unique_id") or device.get("serial_number") or "").strip()
-    device_type = embedded_normalize_device_type(device.get("device_type") or device.get("name"))
+    unique_id = str(
+        device.get("unique_id")
+        or device.get("serial_number")
+        or ""
+    ).strip()
+
+    device_type = embedded_normalize_device_type(
+        device.get("device_type")
+        or device.get("name")
+    )
 
     if not unique_id:
         return None
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     _, user_id = embedded_get_active_user(cur, pc_tag)
 
     embedded_insert_usb_event(cur, "connected", {
@@ -3279,25 +3302,60 @@ def embedded_process_connected_event(cur, lab_id, pc_tag, device):
         "product": device.get("product") or "Unknown"
     }, pc_tag, lab_id)
 
-    # 1. Exact registered device returned.
-    exact_registered = embedded_find_registered_by_exact_id(cur, lab_id, pc_tag, unique_id)
+    # =========================================================
+    # 1. EXACT REGISTERED DEVICE RETURNED
+    # =========================================================
+
+    exact_registered = embedded_find_registered_by_exact_id(
+        cur,
+        lab_id,
+        pc_tag,
+        unique_id
+    )
 
     if exact_registered:
+
         peripheral_id, registered_name, registered_serial, registered_unique, old_status = exact_registered
-        registered_log_id = registered_serial or registered_unique or unique_id
 
-        embedded_log_peripheral_event(cur, registered_log_id, "connected", registered_name, pc_tag)
+        registered_log_id = (
+            registered_serial
+            or registered_unique
+            or unique_id
+        )
 
-        cycle_count = embedded_count_cycles(cur, registered_log_id)
+        embedded_log_peripheral_event(
+            cur,
+            registered_log_id,
+            "connected",
+            registered_name,
+            pc_tag
+        )
+
+        cycle_count = embedded_count_cycles(
+            cur,
+            registered_log_id
+        )
+
+        # =====================================================
+        # FAULTY AFTER MULTIPLE RECONNECT CYCLES
+        # =====================================================
 
         if cycle_count >= FAULTY_RECONNECT_COUNT:
+
             cur.execute("""
                 UPDATE peripherals
-                SET status = 'faulty',
+                SET
+                    status = 'faulty',
                     disconnected_at = NULL,
-                    status_updated_at = ?
+                    disconnect_count = 0,
+                    status_updated_at = ?,
+                    last_event_at = ?
                 WHERE id = ?
-            """, (now, peripheral_id))
+            """, (
+                now,
+                now,
+                peripheral_id
+            ))
 
             embedded_insert_alert_once(
                 cur,
@@ -3311,52 +3369,123 @@ def embedded_process_connected_event(cur, lab_id, pc_tag, device):
                 user_id
             )
 
-            print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | {registered_log_id} | faulty")
+            print(
+                f"[STATUS UPDATE] "
+                f"{pc_tag} | {registered_name} | "
+                f"{registered_log_id} | faulty"
+            )
+
             return "faulty"
+
+        # =====================================================
+        # NORMAL CONNECTED
+        # =====================================================
 
         cur.execute("""
             UPDATE peripherals
-            SET status = 'connected',
+            SET
+                status = 'connected',
                 disconnected_at = NULL,
-                status_updated_at = ?
+                disconnect_count = 0,
+                status_updated_at = ?,
+                last_event_at = ?
             WHERE id = ?
-        """, (now, peripheral_id))
+        """, (
+            now,
+            now,
+            peripheral_id
+        ))
 
-        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | detected={unique_id} | connected from {old_status}")
+        print(
+            f"[STATUS UPDATE] "
+            f"{pc_tag} | {registered_name} | "
+            f"detected={unique_id} | "
+            f"connected from {old_status}"
+        )
+
         return "connected"
 
-    # 2. Same type but different ID.
-    # This can only become replaced if registered original is already NOT connected.
-    type_registered = embedded_find_registered_by_type(cur, lab_id, pc_tag, device_type)
+    # =========================================================
+    # 2. SAME TYPE BUT DIFFERENT ID
+    # =========================================================
+
+    type_registered = embedded_find_registered_by_type(
+        cur,
+        lab_id,
+        pc_tag,
+        device_type
+    )
 
     if not type_registered:
-        print(f"[UNREGISTERED CONNECTED] {pc_tag} | {device_type} | {unique_id}")
+        print(
+            f"[UNREGISTERED CONNECTED] "
+            f"{pc_tag} | {device_type} | {unique_id}"
+        )
         return None
 
     peripheral_id, registered_name, registered_serial, registered_unique, old_status = type_registered
-    registered_ids = embedded_get_registered_ids(registered_serial, registered_unique)
-    registered_log_id = registered_serial or registered_unique or unique_id
+
+    registered_ids = embedded_get_registered_ids(
+        registered_serial,
+        registered_unique
+    )
+
+    registered_log_id = (
+        registered_serial
+        or registered_unique
+        or unique_id
+    )
+
     old_status_lower = str(old_status or "").lower()
 
+    # =========================================================
+    # REPLACED DEVICE
+    # =========================================================
+
     if unique_id not in registered_ids:
+
         # IMPORTANT FIX:
-        # Do not mark replaced while original registered device is still connected/faulty.
-        if old_status_lower not in ["unplugged", "missing", "replaced"]:
+        # Prevent false replaced while original device
+        # is still connected/faulty.
+
+        if old_status_lower not in [
+            "unplugged",
+            "missing",
+            "replaced"
+        ]:
+
             print(
-                f"[REPLACED BLOCKED] {pc_tag} | {registered_name} | "
-                f"registered={registered_log_id} detected={unique_id} | old_status={old_status}"
+                f"[REPLACED BLOCKED] "
+                f"{pc_tag} | {registered_name} | "
+                f"registered={registered_log_id} "
+                f"detected={unique_id} | "
+                f"old_status={old_status}"
             )
+
             return None
 
         cur.execute("""
             UPDATE peripherals
-            SET status = 'replaced',
+            SET
+                status = 'replaced',
                 disconnected_at = NULL,
-                status_updated_at = ?
+                disconnect_count = 0,
+                status_updated_at = ?,
+                last_event_at = ?
             WHERE id = ?
-        """, (now, peripheral_id))
+        """, (
+            now,
+            now,
+            peripheral_id
+        ))
 
-        embedded_log_peripheral_event(cur, unique_id, "connected", device_type, pc_tag)
+        embedded_log_peripheral_event(
+            cur,
+            unique_id,
+            "connected",
+            device_type,
+            pc_tag
+        )
 
         embedded_insert_alert_once(
             cur,
@@ -3370,38 +3499,83 @@ def embedded_process_connected_event(cur, lab_id, pc_tag, device):
             user_id
         )
 
-        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | registered={registered_log_id} detected={unique_id} | replaced from {old_status}")
+        print(
+            f"[STATUS UPDATE] "
+            f"{pc_tag} | {registered_name} | "
+            f"registered={registered_log_id} "
+            f"detected={unique_id} | "
+            f"replaced from {old_status}"
+        )
+
         return "replaced"
+
+    # =========================================================
+    # FALLBACK CONNECTED
+    # =========================================================
 
     cur.execute("""
         UPDATE peripherals
-        SET status = 'connected',
+        SET
+            status = 'connected',
             disconnected_at = NULL,
-            status_updated_at = ?
+            disconnect_count = 0,
+            status_updated_at = ?,
+            last_event_at = ?
         WHERE id = ?
-    """, (now, peripheral_id))
+    """, (
+        now,
+        now,
+        peripheral_id
+    ))
 
-    print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | connected fallback")
+    print(
+        f"[STATUS UPDATE] "
+        f"{pc_tag} | {registered_name} | "
+        f"connected fallback"
+    )
+
     return "connected"
 
 def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
     """
     Disconnected logic:
     - Only exact registered ID can mark a registered peripheral unplugged.
-    - No type fallback here, so a new mouse will not make the original mouse wrongfully missing.
+    - No type fallback here.
+    - Faulty after 3 disconnect cycles.
+    - Missing timer starts here.
     """
+
     ensure_peripheral_status_columns()
     ensure_peripheral_soft_delete_columns()
+    ensure_peripheral_alerts_table()
 
-    unique_id = str(device.get("unique_id") or device.get("serial_number") or "").strip()
-    device_type = embedded_normalize_device_type(device.get("device_type") or device.get("name"))
+    unique_id = str(
+        device.get("unique_id")
+        or device.get("serial_number")
+        or ""
+    ).strip()
+
+    device_type = embedded_normalize_device_type(
+        device.get("device_type")
+        or device.get("name")
+    )
 
     if not unique_id:
         return None
 
-    registered = embedded_find_registered_by_exact_id(cur, lab_id, pc_tag, unique_id)
+    registered = embedded_find_registered_by_exact_id(
+        cur,
+        lab_id,
+        pc_tag,
+        unique_id
+    )
+
+    # =========================================================
+    # UNREGISTERED DEVICE
+    # =========================================================
 
     if not registered:
+
         embedded_insert_usb_event(cur, "disconnected", {
             "unique_id": unique_id,
             "device_type": device_type,
@@ -3409,18 +3583,39 @@ def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
             "product": device.get("product") or "Unknown"
         }, pc_tag, lab_id)
 
-        print(f"[UNREGISTERED DISCONNECTED] {pc_tag} | {device_type} | {unique_id}")
+        print(
+            f"[UNREGISTERED DISCONNECTED] "
+            f"{pc_tag} | {device_type} | {unique_id}"
+        )
+
         return None
 
     peripheral_id, registered_name, registered_serial, registered_unique, old_status = registered
-    registered_log_id = registered_serial or registered_unique or unique_id
+
+    registered_log_id = (
+        registered_serial
+        or registered_unique
+        or unique_id
+    )
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     _, user_id = embedded_get_active_user(cur, pc_tag)
 
-    event_timestamp = embedded_log_peripheral_event(cur, registered_log_id, "disconnected", registered_name, pc_tag)
+    # =========================================================
+    # LOG EVENT
+    # =========================================================
+
+    event_timestamp = embedded_log_peripheral_event(
+        cur,
+        registered_log_id,
+        "disconnected",
+        registered_name,
+        pc_tag
+    )
 
     if event_timestamp:
+
         embedded_insert_usb_event(cur, "disconnected", {
             "unique_id": registered_log_id,
             "device_type": registered_name,
@@ -3428,16 +3623,69 @@ def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
             "product": device.get("product") or "Unknown"
         }, pc_tag, lab_id)
 
-    cycle_count = embedded_count_cycles(cur, registered_log_id)
+    # =========================================================
+    # GET CURRENT DISCONNECT COUNT
+    # =========================================================
 
-    if cycle_count >= FAULTY_RECONNECT_COUNT:
+    cur.execute("""
+        SELECT COALESCE(disconnect_count, 0)
+        FROM peripherals
+        WHERE id = ?
+    """, (peripheral_id,))
+
+    row = cur.fetchone()
+
+    old_count = row[0] if row else 0
+
+    new_count = old_count + 1
+
+    # =========================================================
+    # SET UNPLUGGED
+    # =========================================================
+
+    cur.execute("""
+        UPDATE peripherals
+        SET
+            status = 'unplugged',
+            disconnected_at = ?,
+            disconnect_count = ?,
+            status_updated_at = ?,
+            last_event_at = ?
+        WHERE id = ?
+    """, (
+        now,
+        new_count,
+        now,
+        now,
+        peripheral_id
+    ))
+
+    print(
+        f"[UNPLUG COUNT] "
+        f"{pc_tag} | {registered_name} | "
+        f"count={new_count}"
+    )
+
+    # =========================================================
+    # FAULTY AFTER 3 DISCONNECTS
+    # =========================================================
+
+    if new_count >= 3:
+
         cur.execute("""
             UPDATE peripherals
-            SET status = 'faulty',
+            SET
+                status = 'faulty',
                 disconnected_at = NULL,
-                status_updated_at = ?
+                disconnect_count = 0,
+                status_updated_at = ?,
+                last_event_at = ?
             WHERE id = ?
-        """, (now, peripheral_id))
+        """, (
+            now,
+            now,
+            peripheral_id
+        ))
 
         embedded_insert_alert_once(
             cur,
@@ -3451,19 +3699,23 @@ def embedded_process_disconnected_event(cur, lab_id, pc_tag, device):
             user_id
         )
 
-        print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | faulty")
+        print(
+            f"[STATUS UPDATE] "
+            f"{pc_tag} | {registered_name} | faulty"
+        )
+
         return "faulty"
 
-    # This is the only place that starts the missing timer.
-    cur.execute("""
-        UPDATE peripherals
-        SET status = 'unplugged',
-            disconnected_at = ?,
-            status_updated_at = ?
-        WHERE id = ?
-    """, (now, now, peripheral_id))
+    # =========================================================
+    # NORMAL UNPLUGGED
+    # =========================================================
 
-    print(f"[STATUS UPDATE] {pc_tag} | {registered_name} | unplugged from {old_status}")
+    print(
+        f"[STATUS UPDATE] "
+        f"{pc_tag} | {registered_name} | "
+        f"unplugged from {old_status}"
+    )
+
     return "unplugged"
 
 
@@ -3471,65 +3723,148 @@ def embedded_check_missing_devices(cur, lab_id, pc_tag):
     """
     Missing logic:
     - Only unplugged devices can become missing.
-    - Uses peripherals.disconnected_at, not old peripheral_logs.
-    - This fixes the bug where unplugged becomes missing immediately because of old logs.
+    - Uses peripherals.disconnected_at only.
+    - Missing after 1 minute unplugged.
+    - Prevents immediate missing bug.
     """
+
     ensure_peripheral_status_columns()
     ensure_peripheral_soft_delete_columns()
+    ensure_peripheral_alerts_table()
 
     cur.execute("""
-        SELECT id, name, serial_number, unique_id, status, disconnected_at
+        SELECT
+            id,
+            name,
+            serial_number,
+            unique_id,
+            status,
+            disconnected_at
         FROM peripherals
         WHERE lab_id = ?
           AND assigned_pc = ?
           AND LOWER(status) = 'unplugged'
           AND COALESCE(deleted, 0) = 0
-    """, (str(lab_id), pc_tag))
+    """, (
+        str(lab_id),
+        pc_tag
+    ))
 
     rows = cur.fetchall()
+
     now = datetime.now()
 
-    for peripheral_id, device_name, serial_number, unique_id, status, disconnected_at in rows:
-        registered_ids = embedded_get_registered_ids(serial_number, unique_id)
+    for (
+        peripheral_id,
+        device_name,
+        serial_number,
+        unique_id,
+        status,
+        disconnected_at
+    ) in rows:
+
+        registered_ids = embedded_get_registered_ids(
+            serial_number,
+            unique_id
+        )
 
         if not registered_ids:
             continue
 
         registered_log_id = registered_ids[0]
 
+        # =====================================================
+        # AUTO FIX NULL disconnected_at
+        # =====================================================
+
         if not disconnected_at:
-            cur.execute("""
-                UPDATE peripherals
-                SET disconnected_at = ?,
-                    status_updated_at = ?
-                WHERE id = ?
-            """, (now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"), peripheral_id))
-            continue
 
-        try:
-            disconnected_time = datetime.strptime(disconnected_at, "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            cur.execute("""
-                UPDATE peripherals
-                SET disconnected_at = ?,
-                    status_updated_at = ?
-                WHERE id = ?
-            """, (now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"), peripheral_id))
-            continue
-
-        elapsed = (now - disconnected_time).total_seconds()
-
-        if elapsed >= MISSING_THRESHOLD_SECONDS:
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
             cur.execute("""
                 UPDATE peripherals
-                SET status = 'missing',
-                    status_updated_at = ?
+                SET
+                    disconnected_at = ?,
+                    status_updated_at = ?,
+                    last_event_at = ?
                 WHERE id = ?
-            """, (timestamp, peripheral_id))
+            """, (
+                timestamp,
+                timestamp,
+                timestamp,
+                peripheral_id
+            ))
 
-            _, user_id = embedded_get_active_user(cur, pc_tag)
+            continue
+
+        # =====================================================
+        # INVALID DATE FIX
+        # =====================================================
+
+        try:
+
+            disconnected_time = datetime.strptime(
+                disconnected_at,
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+        except Exception:
+
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute("""
+                UPDATE peripherals
+                SET
+                    disconnected_at = ?,
+                    status_updated_at = ?,
+                    last_event_at = ?
+                WHERE id = ?
+            """, (
+                timestamp,
+                timestamp,
+                timestamp,
+                peripheral_id
+            ))
+
+            continue
+
+        # =====================================================
+        # CHECK ELAPSED TIME
+        # =====================================================
+
+        elapsed = (
+            now - disconnected_time
+        ).total_seconds()
+
+        # =====================================================
+        # 1 MINUTE = MISSING
+        # =====================================================
+
+        if elapsed >= 60:
+
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute("""
+                UPDATE peripherals
+                SET
+                    status = 'missing',
+                    status_updated_at = ?,
+                    last_event_at = ?
+                WHERE id = ?
+            """, (
+                timestamp,
+                timestamp,
+                peripheral_id
+            ))
+
+            _, user_id = embedded_get_active_user(
+                cur,
+                pc_tag
+            )
+
+            # =================================================
+            # INSERT ALERT ONLY ONCE
+            # =================================================
 
             embedded_insert_alert_once(
                 cur,
@@ -3543,8 +3878,10 @@ def embedded_check_missing_devices(cur, lab_id, pc_tag):
                 user_id
             )
 
-            print(f"[STATUS UPDATE] {pc_tag} | {device_name} | missing")
-
+            print(
+                f"[STATUS UPDATE] "
+                f"{pc_tag} | {device_name} | missing"
+            )
 
 def embedded_save_detected_devices_and_update_status(lab_id, pc_tag, devices):
     """
@@ -4618,14 +4955,56 @@ def debug_pc_status(lab_id, pc_tag):
         "peripherals": peripherals
     })
 
+def background_missing_checker():
+    """
+    Realtime missing checker.
+    Runs every 5 seconds.
+    """
+
+    while True:
+
+        try:
+
+            with sqlite3.connect(DB_FILE) as conn:
+
+                cur = conn.cursor()
+
+                cur.execute("""
+                    SELECT DISTINCT lab_id, assigned_pc
+                    FROM peripherals
+                    WHERE LOWER(status) = 'unplugged'
+                      AND COALESCE(deleted,0)=0
+                """)
+
+                rows = cur.fetchall()
+
+                for lab_id, pc_tag in rows:
+
+                    embedded_check_missing_devices(
+                        cur,
+                        str(lab_id),
+                        pc_tag
+                    )
+
+                conn.commit()
+
+        except Exception as e:
+            print("[BACKGROUND MISSING CHECK ERROR]", e)
+
+        time.sleep(5)
+
 if __name__ == "__main__":
-    ensure_detected_devices_table()
+
     ensure_peripheral_status_columns()
-    ensure_peripheral_soft_delete_columns()
+    ensure_peripheral_alerts_table()
 
-    # Keep this ON for automatic local USB status updates.
-    # Set DISABLE_EMBEDDED_SCANNER=1 only if you use a separate local agent.
-    if os.environ.get("DISABLE_EMBEDDED_SCANNER", "0") != "1":
-        start_embedded_detection_agent()
+    Thread(
+        target=background_missing_checker,
+        daemon=True
+    ).start()
 
-    app.run(debug=True, use_reloader=False)
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=True
+    )
